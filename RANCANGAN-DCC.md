@@ -1,5 +1,7 @@
 # Disaster Center DCC 20 kV — Sumatera Barat
 
+Catatan pembaruan 28 Oktober 2026: dokumen ini dipertahankan sebagai rancangan awal prototipe. Spesifikasi aktif bernama **Web App Disaster Information Center**, versi 0.3, pada [PRD.md](./PRD.md). ArcGIS kini menjadi sumber utama aset yang direncanakan; Google Earth/KML adalah impor/cadangan. Windy ditambahkan sebagai kandidat visualisasi dan Marco ditunda. Perencanaan tagging, polygon, rekap pelanggan, foto serta peran pengguna mengikuti PRD dan [skema data](./SKEMA-DATA-DAN-KONEKTOR.md).
+
 Rancangan awal dan prototipe, 28 Oktober 2026. Cakupan seluruh Sumatera Barat sesuai konfirmasi pengguna. Proyek Google Earth pengguna merupakan baseline aset; isi proyek belum berhasil diambil dari tautan. Tidak ada aset asli atau koneksi SCADA yang diasumsikan tersedia.
 
 ## Keputusan yang disarankan

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Disaster Information Center</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>
+      </div>
+      <div style="min-width:0">
+        <h1 id="site-title">Disaster Information Center</h1>
+        <p id="site-subtitle">DCC UP2D Sumatera Barat</p>
+      </div>
+    </div>
+    <div class="top-spacer"></div>
+    <div class="clock"><b id="clock" class="num">--:--</b><span id="clock-date">WIB</span></div>
+    <div class="user-box" id="user-box"></div>
+  </header>
+
+  <div class="ribbon" id="ribbon" role="status" aria-live="polite">
+    <div class="ribbon-state" id="ribbon-state">Menghubungkan ke BMKG…</div>
+    <div class="ribbon-items" id="ribbon-items"></div>
+    <div class="ribbon-meta" id="ribbon-meta"></div>
+  </div>
+
+  <main class="main">
+    <aside class="rail" aria-label="Panel kerja">
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" data-tab="layers" aria-selected="true">Peta</button>
+        <button class="tab" role="tab" data-tab="incidents" aria-selected="false">Kejadian</button>
+        <button class="tab" role="tab" data-tab="areas" aria-selected="false">Area &amp; rekap</button>
+      </div>
+      <div class="rail-scroll" id="left"></div>
+    </aside>
+
+    <section class="mapwrap" aria-label="Peta operasi">
+      <div id="map"></div>
+      <div class="map-tools" id="map-tools"></div>
+      <div class="drawbar" id="drawbar" hidden></div>
+      <div class="legend" id="legend"></div>
+      <div class="loading" id="map-loading" hidden><span>Memuat lapisan…</span></div>
+    </section>
+
+    <aside class="rail right" aria-label="Cuaca dan peringatan">
+      <div class="rail-scroll" id="right"></div>
+    </aside>
+  </main>
+</div>
+<div class="toasts" id="toasts" aria-live="assertive"></div>
+<script src="/static/vendor/leaflet/leaflet.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
