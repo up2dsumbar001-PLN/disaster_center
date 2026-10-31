@@ -1,4 +1,6 @@
-# PRD Web App Disaster Information Center
+# PRD Web App GRIDCAST
+
+> Catatan 29 Oktober 2026: aplikasi kini bernama **GRIDCAST** (Weather Intelligence & Grid Asset Monitoring, PLN UP2D Sumatera Barat). Isi dokumen ini ditulis saat aplikasi masih bernama Disaster Information Center; istilah teknis seperti database `disaster_center` tetap.
 
 Versi 0.3 · 28 Oktober 2026 · Wilayah seluruh Sumatera Barat · Status spesifikasi pengembangan untuk review DCC, GIS dan TI/OT.
 

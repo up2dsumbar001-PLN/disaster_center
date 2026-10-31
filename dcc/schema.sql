@@ -1,4 +1,4 @@
--- Disaster Information Center · skema v1
+-- GRIDCAST (sebelumnya Disaster Information Center) · skema v1
 -- Dijalankan otomatis saat aplikasi start (idempotent). PostgreSQL 12+.
 -- Tidak memerlukan PostGIS: geometri disimpan sebagai GeoJSON (jsonb) dan
 -- dianalisis oleh modul dcc.geo.

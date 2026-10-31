@@ -9,6 +9,8 @@ Port dari prototipe (lib/disaster-model.ts) dengan perilaku yang sama:
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -39,6 +41,7 @@ class Warning:
     references: list = field(default_factory=list)
     areas: list = field(default_factory=list)       # list of GeoJSON geometries
     areas_text: list = field(default_factory=list)
+    republished: list = field(default_factory=list)  # ID lain dengan isi identik yang digantikan pesan ini
 
 
 def _local(tag: str) -> str:
@@ -169,6 +172,39 @@ def active_warnings(all_w: list[Warning], at: float | None = None) -> list[Warni
         if (w.status == "Actual" and w.msg_type in ("Alert", "Update") and w.id not in suppressed
                 and le(w.sent, at) and le(w.effective, at) and exp is not None and exp > at):
             out.append(w)
+    return dedupe_identical(out)
+
+
+def fingerprint(w: Warning) -> str:
+    """Sidik isi peringatan: semua yang dilihat operator dan dipakai menghitung paparan, tanpa ID/waktu kirim."""
+    body = {"title": w.title.strip(), "description": " ".join(w.description.split()),
+            "instruction": " ".join(w.instruction.split()), "severity": w.severity, "certainty": w.certainty,
+            "urgency": w.urgency, "effective": parse_time(w.effective), "expires": parse_time(w.expires),
+            "areas_text": sorted(a.strip().lower() for a in w.areas_text), "areas": w.areas}
+    return hashlib.sha1(json.dumps(body, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+
+
+def _recency(w: Warning):
+    # ID CAP BMKG memuat waktu terbit (…2026.10.29.10.13.003), jadi urutan angkanya ikut dipakai bila "sent" sama.
+    return (parse_time(w.sent) or 0, tuple(int(x) for x in re.findall(r"\d+", w.id)), w.id)
+
+
+def dedupe_identical(ws: list[Warning]) -> list[Warning]:
+    """BMKG kadang menerbitkan ulang pesan Alert berisi sama persis dengan ID baru (tanpa referensi).
+
+    Hanya pesan terakhir yang dipertahankan; ID lain dicatat di ``republished``. Bila isinya berbeda
+    sedikit pun (teks, tingkat, masa berlaku, atau poligon area), semuanya tetap ditampilkan.
+    """
+    groups: dict[str, list[Warning]] = {}
+    for w in ws:
+        groups.setdefault(fingerprint(w), []).append(w)
+    out = []
+    for g in groups.values():
+        g.sort(key=_recency)
+        latest = g[-1]
+        latest.republished = [x.id for x in g[:-1]]
+        out.append(latest)
+    out.sort(key=_recency)
     return out
 
 

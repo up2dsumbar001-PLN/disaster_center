@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="python -m dcc", description="Disaster Information Center DCC")
+    p = argparse.ArgumentParser(prog="python -m dcc", description="GRIDCAST — Weather Intelligence & Grid Asset Monitoring")
     sub = p.add_subparsers(dest="cmd")
     sub.add_parser("serve")
     sub.add_parser("check")

@@ -1,4 +1,6 @@
-# Peta Akses Jaringan dan Pilihan Layanan Cuaca Disaster Information Center
+# Peta Akses Jaringan dan Pilihan Layanan Cuaca GRIDCAST
+
+> Catatan 29 Oktober 2026: aplikasi kini bernama **GRIDCAST** (Weather Intelligence & Grid Asset Monitoring, PLN UP2D Sumatera Barat). Isi dokumen ini ditulis saat aplikasi masih bernama Disaster Information Center; istilah teknis seperti database `disaster_center` tetap.
 
 Tanggal pemeriksaan sumber publik 28 Oktober 2026. Harga dalam USD sebelum pajak, kurs, biaya pengembangan, hosting dan dukungan tambahan. Ini dasar perencanaan, bukan penawaran vendor atau persetujuan pembelian.
 

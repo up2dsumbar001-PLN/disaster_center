@@ -1,5 +1,5 @@
 <#
-  Memasang Disaster Information Center agar berjalan otomatis saat Windows menyala.
+  Memasang GRIDCAST agar berjalan otomatis saat Windows menyala.
 
   - Bila nssm.exe tersedia (PATH atau folder tools\), dipasang sebagai Windows Service "DCC-DisasterCenter".
   - Bila tidak, dibuat Scheduled Task "DCC-DisasterCenter" (akun SYSTEM, saat startup, restart bila berhenti).
@@ -29,8 +29,8 @@ if ($nssm) {
   if (Get-Service $Name -ErrorAction SilentlyContinue) { & $nssm stop $Name | Out-Null; & $nssm remove $Name confirm | Out-Null }
   & $nssm install $Name $venvPy "-m dcc serve"
   & $nssm set $Name AppDirectory $Root
-  & $nssm set $Name DisplayName "DCC Disaster Information Center"
-  & $nssm set $Name Description "Web app Disaster Information Center DCC UP2D Sumbar (port 18085)"
+  & $nssm set $Name DisplayName "GRIDCAST (DCC UP2D Sumbar)"
+  & $nssm set $Name Description "GRIDCAST - Weather Intelligence & Grid Asset Monitoring, PLN UP2D Sumatera Barat (port 18085)"
   & $nssm set $Name Start SERVICE_AUTO_START
   & $nssm set $Name AppStdout (Join-Path $Root "data\logs\service.out.log")
   & $nssm set $Name AppStderr (Join-Path $Root "data\logs\service.err.log")
@@ -54,7 +54,7 @@ if ($nssm) {
     Unregister-ScheduledTask -TaskName $Name -Confirm:$false
   }
   Register-ScheduledTask -TaskName $Name -Action $action -Trigger $trigger -Principal $principal -Settings $settings `
-    -Description "Disaster Information Center DCC (port 18085)" | Out-Null
+    -Description "GRIDCAST PLN UP2D Sumatera Barat (port 18085)" | Out-Null
   Start-ScheduledTask -TaskName $Name
   Write-Host "Scheduled Task '$Name' dibuat (startup, akun SYSTEM) dan dijalankan." -ForegroundColor Green
   Write-Host "Log aplikasi: data\logs\dcc.log"

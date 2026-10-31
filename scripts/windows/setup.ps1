@@ -1,5 +1,5 @@
 <#
-  Disaster Information Center - instalasi di Windows (tanpa Docker)
+  GRIDCAST - instalasi di Windows (tanpa Docker)
 
   Yang dilakukan:
     1. Membuat virtualenv Python .venv dan memasang paket dari requirements.txt

@@ -1,10 +1,21 @@
 <!doctype html>
-<html lang="id">
+<html lang="id" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Disaster Information Center</title>
+<title>GRIDCAST · Weather Intelligence &amp; Grid Asset Monitoring</title>
+<meta name="description" content="Pemantauan dan prakiraan cuaca terintegrasi dengan peta aset jaringan distribusi listrik. PLN UP2D Sumatera Barat.">
+<meta name="application-name" content="GRIDCAST">
+<meta name="theme-color" content="#0b1d30">
+<meta property="og:title" content="GRIDCAST">
+<meta property="og:description" content="Weather Intelligence &amp; Grid Asset Monitoring · PLN UP2D Sumatera Barat">
+<meta property="og:type" content="website">
+<link rel="manifest" href="/static/manifest.json">
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<script>
+  // Terapkan tema tersimpan sebelum halaman digambar (hindari kedipan).
+  try { var t = localStorage.getItem('gc.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -13,15 +24,19 @@
   <header class="top">
     <div class="brand">
       <div class="brand-mark" aria-hidden="true">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 9h18M3 15h18M9 3v18M15 3v18" opacity=".38"/><path d="M13.5 3.5 7.5 13h5l-1.5 7.5 6.5-10h-5z" fill="currentColor" stroke="none"/>
+        </svg>
       </div>
-      <div style="min-width:0">
-        <h1 id="site-title">Disaster Information Center</h1>
-        <p id="site-subtitle">DCC UP2D Sumatera Barat</p>
+      <div class="brand-text">
+        <h1 id="site-title" aria-label="GRIDCAST">GRID<span class="x">CAST</span></h1>
+        <p id="site-subtitle">Weather Intelligence &amp; Grid Asset Monitoring</p>
       </div>
+      <span class="unit" id="site-unit">PLN UP2D Sumatera Barat</span>
     </div>
     <div class="top-spacer"></div>
     <div class="clock"><b id="clock" class="num">--:--</b><span id="clock-date">WIB</span></div>
+    <button class="iconbtn" id="btn-theme" title="Ganti tema terang/gelap" aria-label="Ganti tema terang/gelap"></button>
     <div class="user-box" id="user-box"></div>
   </header>
 
@@ -32,6 +47,17 @@
   </div>
 
   <main class="main">
+    <section class="mapwrap" aria-label="Peta operasi">
+      <div id="map"></div>
+      <div class="map-tools" id="map-tools"></div>
+      <div class="drawbar" id="drawbar" hidden></div>
+      <div class="map-dock">
+        <div class="legend" id="legend"></div>
+        <div class="timebar" id="timebar" hidden></div>
+      </div>
+      <div class="loading" id="map-loading" hidden><span>Memuat lapisan…</span></div>
+    </section>
+
     <aside class="rail" aria-label="Panel kerja">
       <div class="tabs" role="tablist">
         <button class="tab" role="tab" data-tab="layers" aria-selected="true">Peta</button>
@@ -40,18 +66,14 @@
       </div>
       <div class="rail-scroll" id="left"></div>
     </aside>
-
-    <section class="mapwrap" aria-label="Peta operasi">
-      <div id="map"></div>
-      <div class="map-tools" id="map-tools"></div>
-      <div class="drawbar" id="drawbar" hidden></div>
-      <div class="legend" id="legend"></div>
-      <div class="loading" id="map-loading" hidden><span>Memuat lapisan…</span></div>
-    </section>
+    <button class="rail-toggle left" id="tg-left" title="Lipat/buka panel kiri" aria-label="Lipat panel kiri">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="m15 6-6 6 6 6"/></svg></button>
 
     <aside class="rail right" aria-label="Cuaca dan peringatan">
       <div class="rail-scroll" id="right"></div>
     </aside>
+    <button class="rail-toggle right" id="tg-right" title="Lipat/buka panel kanan" aria-label="Lipat panel kanan">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="m9 6 6 6-6 6"/></svg></button>
   </main>
 </div>
 <div class="toasts" id="toasts" aria-live="assertive"></div>

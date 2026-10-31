@@ -1,4 +1,4 @@
-# Disaster Information Center — dependensi server (Python 3.10+)
+# GRIDCAST — dependensi server (Python 3.10+)
 starlette>=0.46,<2
 uvicorn>=0.30
 python-multipart>=0.0.18

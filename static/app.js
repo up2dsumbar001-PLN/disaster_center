@@ -1,4 +1,4 @@
-/* Disaster Information Center — frontend (vanilla JS + Leaflet, tanpa build) */
+/* GRIDCAST — frontend (vanilla JS + Leaflet, tanpa build) */
 'use strict';
 
 /* ================================================================ utils */
@@ -95,9 +95,11 @@ async function boot() {
     return;
   }
   S.user = S.cfg.user; S.role = S.cfg.role;
-  $('#site-title').textContent = S.cfg.title;
+  if (S.cfg.title && S.cfg.title.toUpperCase() !== 'GRIDCAST') $('#site-title').textContent = S.cfg.title;
   $('#site-subtitle').textContent = S.cfg.subtitle;
-  document.title = S.cfg.title;
+  if (S.cfg.unit) $('#site-unit').textContent = S.cfg.unit;
+  document.title = `${S.cfg.title} · ${S.cfg.subtitle}`;
+  initChrome();
   initMap();
   renderUser();
   bindTabs();
@@ -110,7 +112,85 @@ async function boot() {
   refreshIncidents(); refreshAreas(); setInterval(() => { if (!S.draw) { refreshIncidents(); refreshAreas(); } }, 90000);
   refreshQuake(); setInterval(refreshQuake, 300000);
   refreshTio(); setInterval(refreshTio, 600000);
+  refreshWag(); setInterval(refreshWag, 30000);
   if (S.user?.must_change_password) openPasswordModal(true);
+}
+
+/* ---------------------------------------------- tema, panel lipat */
+function initChrome() {
+  const btn = $('#btn-theme');
+  const icon = () => {
+    const dark = document.documentElement.dataset.theme === 'dark';
+    btn.innerHTML = dark
+      ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>'
+      : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
+    btn.title = dark ? 'Tema terang' : 'Tema gelap';
+  };
+  btn.onclick = () => {
+    const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = t;
+    localStorageSet('gc.theme', t);
+    icon();
+  };
+  icon();
+  for (const side of ['left', 'right']) {
+    const cls = side === 'left' ? 'l-off' : 'r-off';
+    if (localStorageGet('gc.' + side) === 'off') document.body.classList.add(cls);
+    $('#tg-' + side).onclick = () => {
+      const off = document.body.classList.toggle(cls);
+      localStorageSet('gc.' + side, off ? 'off' : 'on');
+    };
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.target.closest('input,textarea,select') || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === '[') $('#tg-left').click();
+    if (e.key === ']') $('#tg-right').click();
+  });
+}
+
+/* ---------------------------------------------- linimasa cuaca (sekarang, +1, +2 jam) */
+const TIME_LAYERS = ['tio_rain', 'tio_pts', 'wind', 'aqi'];
+S.wxOffset = 0;
+function renderTimebar() {
+  const bar = $('#timebar');
+  if (!bar) return;
+  const on = TIME_LAYERS.some(k => S.layerOn[k]);
+  bar.hidden = !on;
+  if (!on) { stopPlay(); return; }
+  const frames = S.tio?.tiles?.frames;
+  const base = Date.now();
+  const steps = [0, 1, 2].map(h => {
+    const f = frames?.[h];
+    const t = f ? new Date(f.time) : new Date(Math.floor(base / 3600000) * 3600000 + h * 3600000);
+    const na = S.layerOn.tio_rain && f && !f.layers.some(l => l.available >= l.count);
+    return `<button class="tb-step ${S.wxOffset === h ? 'on' : ''} ${na ? 'na' : ''}" data-h="${h}" title="${na ? 'Tile hujan untuk jam ini belum lengkap' : ''}">
+      <b>${h ? '+' + h + ' jam' : 'Sekarang'}</b><span>${fmtTime(t.toISOString(), { date: false })}</span></button>`;
+  }).join('');
+  bar.innerHTML = `<button class="tb-play" id="tb-play" title="${S.play ? 'Jeda' : 'Putar'}" aria-label="Putar linimasa">${S.play
+    ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>'
+    : '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>'}</button>
+    <span class="tb-label">Linimasa</span>${steps}`;
+  $$('[data-h]', bar).forEach(b => b.onclick = () => { stopPlay(); setWxOffset(+b.dataset.h); });
+  $('#tb-play', bar).onclick = () => S.play ? stopPlay() : startPlay();
+}
+function startPlay() {
+  S.play = setInterval(() => setWxOffset((S.wxOffset + 1) % 3), 2200);
+  renderTimebar();
+}
+function stopPlay() { if (S.play) { clearInterval(S.play); S.play = null; renderTimebar(); } }
+async function setWxOffset(h) {
+  if (S.wxOffset === h && !S.play) return;
+  S.wxOffset = h;
+  renderTimebar();
+  for (const k of TIME_LAYERS) if (S.layerOn[k]) await reloadTimed(k);
+}
+async function reloadTimed(k) {
+  try {
+    if (k === 'tio_rain' && S.tio?.tiles) buildTioRain(S.tio);
+    if (k === 'tio_pts') drawTioPoints(S.wxOffset ? await api(`/api/weather/tio?h=${S.wxOffset}`) : S.tio);
+    if (k === 'wind') drawWind(await api(`/api/weather/wind?h=${S.wxOffset}`));
+    if (k === 'aqi') drawAqi(await api(`/api/weather/aqi?h=${S.wxOffset}`));
+  } catch (e) { fail(e); }
 }
 
 function tickClock() {
@@ -130,6 +210,8 @@ function initMap() {
   L.control.zoom({ position: 'topright' }).addTo(map);
   L.control.scale({ imperial: false, position: 'bottomright' }).addTo(map);
   S.map = map;
+  // Ukuran kanvas bisa berubah (jendela, tata letak mobile, panel lipat): selalu sesuaikan peta.
+  if (window.ResizeObserver) new ResizeObserver(() => map.invalidateSize({ pan: false })).observe($('#map'));
   S.canvas = L.canvas({ padding: 0.4, tolerance: 4 });
   setBasemap(localStorageGet('dcc.basemap') || S.cfg.settings.basemaps[0]?.id);
   S.layers.alerts = L.layerGroup().addTo(map);
@@ -177,7 +259,7 @@ function renderLegend() {
     `<div><span class="swatch ${d.line ? 'ln' : d.poly ? 'sq' : ''}" style="background:${d.color};${d.line ? 'width:16px' : ''}"></span>${esc(d.label)}</div>`);
   if (S.layerOn.alerts) items.push(`<div><span class="swatch sq" style="background:#f59e0b;opacity:.7"></span>Area peringatan BMKG</div>`);
   if (S.layerOn.wind) items.push(`<div><span class="wind-arrow">➤</span>Angin 10 m, arah bertiup (Open-Meteo)</div>`);
-  if (S.layerOn.tio_pts) items.push(`<div><span class="wind-arrow" style="color:#7c3aed">➤</span>Angin & prakiraan 6 jam per UP3 (Tomorrow.io)</div>`);
+  if (S.layerOn.tio_pts) items.push(`<div><span class="wind-arrow" style="color:var(--ungu)">➤</span>Angin & prakiraan 6 jam per UP3 (Tomorrow.io)</div>`);
   if (S.layerOn.tio_rain) items.push(`<div><span class="rain-ramp"></span>Intensitas hujan saat ini, makin pekat makin deras (Tomorrow.io)</div>`);
   if (S.layerOn.radar) items.push(`<div><span class="swatch sq" style="background:#22c55e"></span>Radar hujan RainViewer</div>`);
   $('#legend').innerHTML = items.join('') || '<div class="muted">Tidak ada lapisan aktif</div>';
@@ -478,7 +560,7 @@ function leftAreas() {
               <div class="meta"><span class="num">${num(Math.round((a.area_km2 || 0) * 100) / 100)} km²</span>${a.incident_id ? `<span>${esc(incName(a.incident_id) || 'Kejadian #' + a.incident_id)}</span>` : '<span>Tanpa kejadian</span>'}<span>rev ${a.revision}</span></div></div>
           </div></div>`).join('') || '<div class="empty">Belum ada area. Gambar polygon dampak untuk menghitung gardu dan pelanggan di dalamnya.</div>'}</div>
     </div>
-    ${can('user') ? `<div class="sec" style="position:sticky;bottom:0;background:#fff;padding-top:8px">
+    ${can('user') ? `<div class="sec" style="position:sticky;bottom:0;background:var(--panel-solid);padding-top:8px">
       <button class="btn btn-block" id="btn-analyze" ${sel.size ? '' : 'disabled'}>Hitung rekap ${sel.size ? sel.size + ' area terpilih' : ''}</button>
       <p class="hint">Gardu yang berada di beberapa area dihitung satu kali.</p></div>` : ''}`;
 }
@@ -633,6 +715,7 @@ function applyPanels() {
     $('.rp-t', sec).setAttribute('aria-expanded', o);
     $('.rp-pin input', sec).checked = st.pin.includes(id);
   });
+  wagScroll();
 }
 
 function bindPanels(el) {
@@ -657,7 +740,7 @@ function renderRight() {
   const cards = S.alerts.map(alertCard).join('') || `<div class="calm">${(S.health.find(h => h.source === 'bmkg_cap')?.state === 'error')
     ? 'Data peringatan belum dapat diambil. Periksa koneksi internet server ke bmkg.go.id.'
     : 'Tidak ada peringatan dini cuaca BMKG yang berlaku untuk Sumatera Barat saat ini. Tetap pantau kondisi lapangan.'}</div>`;
-  const labels = { bmkg_cap: 'BMKG peringatan dini (CAP)', bmkg_quake: 'BMKG gempa terkini', wa_gateway: 'WA gateway', tomorrow: 'Tomorrow.io (prakiraan model)' };
+  const labels = { bmkg_cap: 'BMKG peringatan dini (CAP)', bmkg_quake: 'BMKG gempa terkini', wa_gateway: 'WA gateway', wag: 'WA grup BMKG', tomorrow: 'Tomorrow.io (prakiraan model)' };
   const health = S.health.map(h => `<div><span>${esc(labels[h.source] || h.source)}</span><span class="chip ${h.state === 'ok' ? 'ok' : h.state === 'partial' ? 'warn' : h.state === 'error' ? 'err' : 'grey'}" title="${esc(h.error || '')}">${{ ok: 'Terhubung', partial: 'Sebagian', error: 'Gagal', unknown: 'Belum dicek' }[h.state] || h.state}</span></div>`).join('')
     || '<div class="muted">Collector belum berjalan.</div>';
   const bad = S.health.filter(h => h.state === 'error').length;
@@ -668,6 +751,7 @@ function renderRight() {
     ${panel('alerts', 'Peringatan dini cuaca', alertAside, `${S.corridor !== undefined ? `<div class="small muted" style="margin-bottom:6px">Koridor jaringan ${S.corridor} m</div>` : ''}${cards}
       ${can('user') ? `<div class="row" style="margin-top:6px"><button class="btn btn-ghost btn-sm" id="btn-wx-refresh">Periksa sekarang</button>
       <button class="btn btn-ghost btn-sm" id="btn-sim">${S.alerts.some(a => a.simulated) ? 'Hentikan simulasi' : 'Latihan simulasi'}</button></div>` : ''}`)}
+    ${wagOn() ? panel('wag', `${WA_ICON}<span id="wag-title">Grup WhatsApp</span>`, '<span id="wag-aside"></span>', '<div id="wag-box" class="wa"></div>') : ''}
     ${panel('quake', 'Gempa', '<span id="quake-aside"></span>', `<div id="quake-box" class="muted small">Memuat…</div>
       <div class="qh"><div class="qh-head"><b class="small">5 gempa terakhir</b><span class="seg"><button data-qsrc="dirasakan">Dirasakan</button><button data-qsrc="m5">M5+</button></span></div>
       <div id="quake-hist" class="small muted">Memuat…</div></div>`)}
@@ -697,6 +781,97 @@ function renderRight() {
   renderQuake();
   renderQuakeHist();
   renderTio();
+  renderWag();
+}
+
+/* ----------------------------------------------- pesan grup WhatsApp (dari wa_gateway) */
+const WA_ICON = '<svg class="wa-ic" width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-8.6 15L2 22l5.1-1.3A10 10 0 1 0 12 2zm5.6 14c-.2.7-1.4 1.3-2 1.4-.5.1-1.2.1-1.9-.1a14 14 0 0 1-1.8-.7 13 13 0 0 1-4.9-4.3c-.6-.8-1.1-1.8-1.1-2.9 0-1 .5-1.5.8-1.8.2-.2.5-.3.7-.3h.5c.2 0 .4 0 .6.5l.8 2c.1.2.1.3 0 .5l-.4.6-.4.4c-.1.2-.3.3-.1.6.2.3.8 1.3 1.7 2.1 1.2 1 2.1 1.3 2.4 1.5.3.1.5.1.6-.1l.9-1c.2-.3.4-.2.6-.1l1.9.9c.3.1.5.2.5.3.1.2.1.8-.1 1.5z"/></svg>';
+const WA_KIND = { image: 'Gambar', sticker: 'Stiker', video: 'Video', video_note: 'Video', audio: 'Suara', voice: 'Pesan suara', document: 'Dokumen', view_once: 'Media sekali lihat', location: 'Lokasi', contact: 'Kontak', contacts: 'Kontak', poll: 'Polling' };
+const WA_STATE = { pending: 'sedang diunduh gateway', metadata_only: 'tidak disimpan gateway', failed: 'gagal diunduh gateway', expired: 'masa simpan berakhir', not_collected: 'tidak disimpan' };
+const wagOn = () => can('user') && S.cfg.settings.wag?.enabled;
+const waClock = (iso) => fmtTime(iso, { date: false }).replace(' WIB', '');
+const waDay = (iso) => new Intl.DateTimeFormat('id-ID', { timeZone: TZ, day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(iso));
+
+async function refreshWag() {
+  if (!wagOn()) return;
+  try { S.wag = await api('/api/wag/messages'); S.wagErr = null; } catch (e) { S.wagErr = e.message; }
+  renderWag();
+}
+
+// Format teks WhatsApp: *tebal*, _miring_, ~coret~, dan tautan.
+function waText(t) {
+  const mark = (ch, tag) => (s) => s.replace(new RegExp(`(^|[\\s(])\\${ch}(?=\\S)([^${ch}\\n]+?)\\${ch}(?=$|[\\s).,!?:;])`, 'gm'), `$1<${tag}>$2</${tag}>`);
+  return [mark('*', 'b'), mark('_', 'i'), mark('~', 's')].reduce((s, f) => f(s), esc(t))
+    .replace(/https?:\/\/[^\s<]+/g, u => `<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`);
+}
+
+function waFile(m) {
+  const d = m.media, name = d.name || WA_KIND[m.kind] || 'Berkas';
+  const ext = (name.match(/\.([a-z0-9]{1,5})$/i)?.[1] || (d.mime || '').split('/')[1] || 'file').toUpperCase().slice(0, 4);
+  const size = d.bytes ? `${nf.format(+(d.bytes / 1048576).toFixed(d.bytes < 1048576 ? 2 : 1))} MB · ` : '';
+  return `<div class="wa-doc"><a class="wa-doc-open" href="${esc(d.url)}" target="_blank" rel="noopener" title="Buka ${esc(name)}">
+      <span class="wa-doc-ic ${ext === 'PDF' ? 'pdf' : ''}">${esc(ext)}</span>
+      <span class="wa-doc-t"><b>${esc(name)}</b><small>${size}${esc(ext)}</small></span></a>
+    <a class="wa-doc-dl" href="${esc(d.url)}?download=1" download title="Unduh" aria-label="Unduh ${esc(name)}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14"/></svg></a></div>`;
+}
+
+function waMedia(m) {
+  const d = m.media;
+  if (d?.url) return m.kind === 'image' || m.kind === 'sticker'
+    ? `<img class="wa-img ${m.kind === 'sticker' ? 'sticker' : ''}" src="${esc(d.url)}" data-wa-full="${esc(d.url)}" alt="${esc(m.text || WA_KIND[m.kind])}" loading="lazy">`
+    : waFile(m);
+  if (d || WA_KIND[m.kind]) return `<div class="wa-miss">${esc(d?.name || WA_KIND[m.kind] || 'Media')}${d ? `: ${esc(WA_STATE[d.state] || d.state)}` : ''}</div>`;
+  return '';
+}
+
+function waBubble(m, first) {
+  const body = m.revoked ? '<div class="wa-miss">Pesan ini telah dihapus</div>'
+    : `${waMedia(m)}${m.text ? `<div class="wa-text">${waText(m.text)}</div>` : ''}`;
+  return `<div class="wa-msg ${m.from_me ? 'me' : ''} ${first ? 'first' : ''}"><div class="wa-bub">
+    ${first ? `<div class="wa-name">${esc(m.sender)}</div>` : ''}${body}
+    <div class="wa-time">${m.edited ? 'diedit · ' : ''}${esc(waClock(m.at))}</div></div></div>`;
+}
+
+function waChat(msgs) {
+  let day = '', prev = '';
+  return msgs.map(m => {
+    const d = waDay(m.at), first = d !== day || m.sender !== prev;
+    const sep = d !== day ? `<div class="wa-day"><span>${esc(d === waDay(new Date()) ? 'Hari ini' : d)}</span></div>` : '';
+    day = d; prev = m.sender;
+    return sep + waBubble(m, first);
+  }).join('');
+}
+
+function renderWag() {
+  const box = $('#wag-box');
+  if (!box) return;
+  const w = S.wag, msgs = w?.messages || [], last = msgs.at(-1);
+  if (w?.group) { const t = $('#wag-title'); t.textContent = w.group; t.title = w.group; }
+  $('#wag-aside').innerHTML = S.wagErr ? '<span class="chip err">terputus</span>'
+    : last ? `<span class="small muted">${esc(waClock(last.at))}</span>` : '';
+  const sig = JSON.stringify([S.wagErr, w]);
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  const note = S.wagErr ? `<div class="wa-note err">${esc(S.wagErr)}</div>`
+    : !w ? '<div class="wa-note">Memuat pesan…</div>'
+    : !w.configured ? `<div class="wa-note">Capture WhatsApp belum terhubung.${can('admin') ? ' Isi token gateway di Administrasi, tab Notifikasi WA.' : ' Hubungi Admin.'}</div>`
+    : !msgs.length ? '<div class="wa-note">Belum ada pesan di grup ini.</div>' : '';
+  box.innerHTML = `<div class="wa-chat" id="wag-chat" tabindex="0" aria-label="Pesan grup WhatsApp">${note}${waChat(msgs)}</div>`;
+  const chat = $('#wag-chat', box);
+  chat.onscroll = () => {
+    S.wagStick = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 40;
+    S.wagTop = chat.scrollTop;
+  };
+  chat.addEventListener('load', wagScroll, true);
+  chat.addEventListener('error', (e) => { if (e.target.matches('.wa-img')) e.target.outerHTML = '<div class="wa-miss">Gambar tidak dapat dimuat</div>'; }, true);
+  $$('[data-wa-full]', chat).forEach(img => img.onclick = () => lightbox(img.dataset.waFull));
+  wagScroll();
+}
+
+// Seperti WhatsApp: tetap di pesan terbaru, kecuali pengguna sedang menggulir ke atas.
+function wagScroll() {
+  const c = $('#wag-chat');
+  if (c?.offsetParent) c.scrollTop = S.wagStick === false ? S.wagTop : c.scrollHeight;
 }
 
 function alertCard(a) {
@@ -706,6 +881,7 @@ function alertCard(a) {
     <h3>${esc(a.title)}</h3>
     <div class="meta">Berlaku ${fmtTime(a.effective)} sampai ${fmtTime(a.expires)}${a.severity ? ', tingkat ' + esc(SEV_CAP[a.severity] || a.severity) : ''}</div>
     <div class="small" style="margin-top:4px">${esc(a.areas_text.join(', '))}</div>
+    ${a.republished?.length ? `<div class="small muted" style="margin-top:2px" title="${esc(a.republished.join(', '))}">BMKG menerbitkan ulang isi yang sama ${a.republished.length + 1}×; ditampilkan yang terakhir.</div>` : ''}
     <div class="stats"><div class="stat"><b>${num(ex.trafo || 0)}</b><span>gardu distribusi</span></div>
       <div class="stat"><b>${num(ex.jtm || 0)}</b><span>penyulang</span></div>
       <div class="stat"><b>${num((ex.recloser || 0) + (ex.lbs || 0) + (ex.gh || 0) + (ex.gi || 0))}</b><span>GI/GH/LBS/recloser</span></div></div>
@@ -791,7 +967,7 @@ function renderQuakeHist() {
     const g = items[+b.dataset.qmap];
     if (S.layers.qsel) S.map.removeLayer(S.layers.qsel);
     S.layers.qsel = L.circleMarker([g.lat, g.lon], { radius: 9, color: '#fff', weight: 2, fillColor: '#7f1d1d', fillOpacity: 1 })
-      .bindTooltip(`M${esc(g.magnitude)} ${esc(g.wilayah)}<br>${esc(g.tanggal)} ${esc(g.jam)}<br><span style="color:#666">klik titik untuk menutup</span>`, { permanent: true, direction: 'top' }).addTo(S.map);
+      .bindTooltip(`M${esc(g.magnitude)} ${esc(g.wilayah)}<br>${esc(g.tanggal)} ${esc(g.jam)}<br><span class="muted small">klik titik untuk menutup</span>`, { permanent: true, direction: 'top' }).addTo(S.map);
     S.layers.qsel.on('click', () => { S.map.removeLayer(S.layers.qsel); S.layers.qsel = null; });
     S.map.setView([g.lat, g.lon], 7);
   });
@@ -892,7 +1068,8 @@ async function loadForecast(code) {
     if (!r) throw lastErr || new Error('Prakiraan tidak tersedia.');
     const lok = r.lokasi || {};
     const note = used !== code ? `<div class="hint" style="margin:2px 0">BMKG belum punya data untuk ${esc(S.wil.byCode[code]?.n || code)}, ditampilkan desa terdekat di kecamatan yang sama.</div>` : '';
-    const rows = (r.data?.[0]?.cuaca || []).flat().slice(0, 8);
+    // Cache server 3 jam: buang jam yang sudah lewat agar tabel selalu mulai dari sekarang.
+    const rows = (r.data?.[0]?.cuaca || []).flat().filter(c => new Date(String(c.utc_datetime).replace(' ', 'T') + 'Z') >= Date.now() - 3 * 3600e3).slice(0, 8);
     box.innerHTML = `<b>${esc(lok.desa || S.wil?.byCode[code]?.n || '')}, ${esc(lok.kecamatan || '')}</b><div class="muted">${esc(lok.kotkab || '')}</div>${note}<table class="t" style="margin-top:4px"><tbody>${rows.map(c => `<tr><td>${fmtTime(c.utc_datetime + 'Z')}</td><td>${esc(c.weather_desc)}</td><td class="n">${esc(c.t)}°C</td><td class="n">${esc(c.ws)} km/j ${esc(c.wd)}</td></tr>`).join('')}</tbody></table>`;
     S.fcHtml = box.innerHTML;
     S.fcName = lok.desa || S.wil?.byCode[used]?.n || '';
@@ -900,9 +1077,35 @@ async function loadForecast(code) {
   } catch (e) { box.innerHTML = `<span style="color:var(--bahaya)">${esc(e.message)}</span>`; }
 }
 
+function drawWind(r) {
+  if (S.layers.wind) S.map.removeLayer(S.layers.wind);
+  const g = L.layerGroup();
+  for (const p of r.points) {
+    if (p.wd === null || p.wd === undefined) continue;
+    const color = p.ws >= 40 ? '#dc2626' : p.ws >= 25 ? '#d97706' : '#0a74c9';
+    const icon = L.divIcon({ className: '', iconSize: [26, 26], html: `<svg width="26" height="26" viewBox="0 0 24 24" style="transform:rotate(${(p.wd + 180) % 360}deg);filter:drop-shadow(0 1px 1px rgba(0,0,0,.35))"><path d="M12 2 18 14h-4.5v8h-3v-8H6z" fill="${color}" stroke="#fff" stroke-width="1"/></svg>` });
+    L.marker([p.lat, p.lon], { icon, keyboard: false }).bindTooltip(`<b>${fmtTime(p.time + 'Z')}</b><br>Angin ${esc(p.ws)} km/j dari ${esc(p.wd)}°, hembusan ${esc(p.wg)} km/j<br>Hujan ${esc(p.rain)} mm, CAPE ${esc(p.cape)} J/kg<br><span class="muted small">${esc(r.cape_note)}</span>`).addTo(g);
+  }
+  S.layers.wind = g;
+  if (S.layerOn.wind) g.addTo(S.map);
+}
+
+function drawAqi(r) {
+  if (S.layers.aqi) S.map.removeLayer(S.layers.aqi);
+  const g = L.layerGroup();
+  const col = (v) => v === null ? '#e5e7eb' : v <= 50 ? '#86efac' : v <= 100 ? '#fde047' : v <= 150 ? '#fdba74' : v <= 200 ? '#f87171' : v <= 300 ? '#c084fc' : '#9f1239';
+  for (const p of r.points) {
+    const icon = L.divIcon({ className: '', iconSize: [40, 18], html: `<span class="aqi-badge" style="background:${col(p.us_aqi)}">${p.us_aqi ?? '?'}</span>` });
+    L.marker([p.lat, p.lon], { icon }).bindTooltip(`${esc(p.name)} · ${fmtTime(p.time + 'Z')}<br>US AQI ${esc(p.us_aqi)}, PM2.5 ${esc(p.pm2_5)} µg/m³, PM10 ${esc(p.pm10)} µg/m³<br><span class="muted small">${esc(r.note)}</span>`).addTo(g);
+  }
+  S.layers.aqi = g;
+  if (S.layerOn.aqi) g.addTo(S.map);
+}
+
 async function toggleWeather(k, on) {
   S.layerOn[k] = on;
   renderLegend();
+  renderTimebar();
   if (k === 'alerts') { drawAlerts(); return; }
   if (k === 'quake') { if (on) drawQuake(); else { if (S.layers.quake) S.map.removeLayer(S.layers.quake); if (S.layers.qsel) S.map.removeLayer(S.layers.qsel); } return; }
   if (S.layers[k]) { S.map.removeLayer(S.layers[k]); S.layers[k] = null; }
@@ -916,37 +1119,23 @@ async function toggleWeather(k, on) {
       toast(`Radar RainViewer ${fmtTime(new Date(last.time * 1000).toISOString())}. Cakupan radar di Sumatera dapat terbatas.`);
     }
     if (k === 'wind') {
-      const r = await api('/api/weather/wind');
-      const g = L.layerGroup();
-      for (const p of r.points) {
-        if (p.wd === null || p.wd === undefined) continue;
-        const color = p.ws >= 40 ? '#c81e1e' : p.ws >= 25 ? '#d97706' : '#0a4f86';
-        const icon = L.divIcon({ className: '', iconSize: [26, 26], html: `<svg width="26" height="26" viewBox="0 0 24 24" style="transform:rotate(${(p.wd + 180) % 360}deg)"><path d="M12 2 18 14h-4.5v8h-3v-8H6z" fill="${color}" stroke="#fff" stroke-width="1"/></svg>` });
-        L.marker([p.lat, p.lon], { icon, keyboard: false }).bindTooltip(`Angin ${esc(p.ws)} km/j dari ${esc(p.wd)}°, hembusan ${esc(p.wg)} km/j<br>Hujan ${esc(p.rain)} mm, CAPE ${esc(p.cape)} J/kg<br><span style="color:#666">${esc(r.cape_note)}</span>`).addTo(g);
-      }
-      S.layers.wind = g.addTo(S.map);
+      const r = await api(`/api/weather/wind?h=${S.wxOffset}`);
+      drawWind(r);
       toast(r.direction_note);
     }
-    if (k === 'aqi') {
-      const r = await api('/api/weather/aqi');
-      const g = L.layerGroup();
-      const col = (v) => v === null ? '#e5e7eb' : v <= 50 ? '#86efac' : v <= 100 ? '#fde047' : v <= 150 ? '#fdba74' : v <= 200 ? '#f87171' : v <= 300 ? '#c084fc' : '#9f1239';
-      for (const p of r.points) {
-        const icon = L.divIcon({ className: '', iconSize: [40, 18], html: `<span class="aqi-badge" style="background:${col(p.us_aqi)}">${p.us_aqi ?? '?'}</span>` });
-        L.marker([p.lat, p.lon], { icon }).bindTooltip(`${esc(p.name)}<br>US AQI ${esc(p.us_aqi)}, PM2.5 ${esc(p.pm2_5)} µg/m³, PM10 ${esc(p.pm10)} µg/m³<br><span style="color:#666">${esc(r.note)}</span>`).addTo(g);
-      }
-      S.layers.aqi = g.addTo(S.map);
-    }
+    if (k === 'aqi') drawAqi(await api(`/api/weather/aqi?h=${S.wxOffset}`));
     if (k === 'tio_rain') {
       const r = S.tio = await api('/api/weather/tio');
-      if (!r.tiles?.count) throw new Error('Tile hujan Tomorrow.io belum tersedia. ' + (r.error || 'Coba lagi beberapa menit lagi.'));
+      if (!r.tiles?.frames?.some(f => f.layers.some(l => l.available))) throw new Error('Tile hujan Tomorrow.io belum tersedia. ' + (r.error || 'Server sedang mengisi cache sesuai kuota, coba lagi beberapa menit lagi.'));
       buildTioRain(r);
-      toast(`Intensitas hujan Tomorrow.io ${fmtTime(r.tiles.time)}. Ini estimasi model/nowcast, bukan radar BMKG.`);
+      renderTimebar();
+      toast('Intensitas hujan Tomorrow.io: estimasi model/nowcast, bukan radar BMKG. Geser linimasa untuk +1/+2 jam.');
     }
     if (k === 'tio_pts') {
-      const r = S.tio = await api('/api/weather/tio');
-      drawTioPoints(r);
-      toast(r.direction_note);
+      S.tio = await api('/api/weather/tio');
+      drawTioPoints(S.wxOffset ? await api(`/api/weather/tio?h=${S.wxOffset}`) : S.tio);
+      renderTimebar();
+      toast(S.tio.direction_note);
     }
   } catch (e) { fail(e); S.layerOn[k] = false; renderLeft(); }
 }
@@ -954,6 +1143,11 @@ async function toggleWeather(k, on) {
 /* ---------------------------------------------------------- Tomorrow.io */
 const hoursFrom = (iso) => Math.max(0, Math.round((new Date(iso) - Date.now()) / 3600000));
 function etaText(p) {
+  const nc = p.nowcast;
+  if (nc && !p.eta_heavy) {
+    if ((nc.rain_now || 0) >= 0.5) return { cls: 'warn', t: 'Hujan sekarang' };
+    if (nc.rain_start_min !== null && nc.rain_start_min !== undefined) return { cls: 'warn', t: `Hujan ±${nc.rain_start_min} menit lagi` };
+  }
   if (p.eta_heavy) return { cls: 'err', t: hoursFrom(p.eta_heavy) ? `Hujan lebat ±${hoursFrom(p.eta_heavy)} jam lagi` : 'Hujan lebat jam ini' };
   if (p.eta_rain) return { cls: 'warn', t: hoursFrom(p.eta_rain) ? `Hujan ±${hoursFrom(p.eta_rain)} jam lagi` : 'Hujan jam ini' };
   return { cls: 'ok', t: 'Tidak ada hujan berarti' };
@@ -962,9 +1156,11 @@ function etaText(p) {
 function tioTooltip(p, r) {
   const e = etaText(p);
   const rows = (p.outlook || []).map(o => `<tr><td>${fmtTime(o.time, { date: false })}</td><td>${esc(o.desc)}</td><td style="text-align:right">${esc(o.prob)}%</td><td style="text-align:right">${esc(o.rain)} mm/j</td></tr>`).join('');
-  return `<b>${esc(p.name)}</b><br>${esc(p.desc)}, ${esc(p.temp)}°C, lembap ${esc(p.hum)}%<br>
+  const days = (p.daily || []).map(d => `<div><b>${new Intl.DateTimeFormat('id-ID', { timeZone: TZ, weekday: 'short' }).format(new Date(d.time))}</b>${esc(d.prob ?? '-')}%<br>${esc(d.rain ?? 0)} mm</div>`).join('');
+  return `<b>${esc(p.name)}</b> <span class="muted small">${fmtTime(p.time)}</span><br>${esc(p.desc)}, ${esc(p.temp)}°C, lembap ${esc(p.hum)}%<br>
     Angin ${esc(p.ws)} km/j dari ${esc(p.wd)}°, hembusan ${esc(p.wg)} km/j<br><b>${esc(e.t)}</b>
-    <table style="margin-top:4px;font-size:11px">${rows}</table><span style="color:#666">${esc(r.note)}</span>`;
+    <table style="margin-top:4px;font-size:11px">${rows}</table>${days ? `<div class="small muted" style="margin-top:4px">5 hari: peluang hujan & akumulasi</div><div class="days">${days}</div>` : ''}
+    <span class="muted small">Data diambil ${ago(p.fetched_at)}. ${esc(r.note)}</span>`;
 }
 
 function drawTioPoints(r) {
@@ -973,47 +1169,58 @@ function drawTioPoints(r) {
   for (const p of r.points || []) {
     if (p.wd === null || p.wd === undefined) continue;
     const color = p.wg >= 45 || p.ws >= 40 ? '#c81e1e' : p.wg >= 30 || p.ws >= 25 ? '#d97706' : '#7c3aed';
-    const ring = p.eta_heavy ? '#c81e1e' : p.eta_rain ? '#d97706' : 'transparent';
-    const icon = L.divIcon({ className: '', iconSize: [30, 30], html: `<div style="width:30px;height:30px;border-radius:50%;border:2px solid ${ring};background:rgba(255,255,255,.75);display:flex;align-items:center;justify-content:center"><svg width="22" height="22" viewBox="0 0 24 24" style="transform:rotate(${(p.wd + 180) % 360}deg)"><path d="M12 2 18 14h-4.5v8h-3v-8H6z" fill="${color}" stroke="#fff" stroke-width="1"/></svg></div>` });
+    const ring = p.eta_heavy ? 'heavy' : (p.eta_rain || p.nowcast?.rain_start_min != null) ? 'rain' : '';
+    const icon = L.divIcon({ className: '', iconSize: [30, 30], html: `<div class="tio-ring ${ring}"><svg width="22" height="22" viewBox="0 0 24 24" style="transform:rotate(${(p.wd + 180) % 360}deg)"><path d="M12 2 18 14h-4.5v8h-3v-8H6z" fill="${color}" stroke="#fff" stroke-width="1"/></svg></div>` });
     L.marker([p.lat, p.lon], { icon, keyboard: false }).bindTooltip(tioTooltip(p, r), { maxWidth: 320 }).addTo(g);
   }
   S.layers.tio_pts = g;
   if (S.layerOn.tio_pts) g.addTo(S.map);
 }
 
-// Dua lapisan tile: zoom 5 seluruh Sumatra (zoom out / di luar Sumbar) dan zoom 7 detail Sumbar.
+function tioPane(name, z) {
+  if (!S.map.getPane(name)) { const p = S.map.createPane(name); p.style.zIndex = z; p.style.pointerEvents = 'none'; }
+  return name;
+}
+
+// Dua lapisan tile per frame waktu: zoom 5 seluruh Sumatra selalu di bawah, zoom 7 detail Sumbar di atasnya,
+// sehingga tidak ada area kosong di luar tile detail. Zoom 5 dilubangi di bawah zoom 7 agar warnanya tidak dobel.
 function buildTioRain(r) {
   if (S.layers.tio_rain) S.map.removeLayer(S.layers.tio_rain);
   if (S.tioRainMove) S.map.off('moveend zoomend', S.tioRainMove);
-  const v = encodeURIComponent(r.tiles.time || '');
-  const mk = (t) => L.tileLayer(`/api/weather/tio/tile/{z}/{x}/{y}.png?v=${v}`, { opacity: .6, minNativeZoom: t.zoom, maxNativeZoom: t.zoom,
-    maxZoom: 19, bounds: t.bounds, attribution: 'Hujan &copy; Tomorrow.io' });
-  const layers = (r.tiles.layers || [{ zoom: r.tiles.zoom, bounds: r.tiles.detail_bounds }]).map(t => ({ ...t, layer: mk(t) }));
-  const group = L.layerGroup();
-  const detail = layers.find(t => t.zoom === r.tiles.zoom), coarse = layers.find(t => t.zoom !== r.tiles.zoom) || detail;
-  const sumbar = L.latLngBounds(r.tiles.detail_bounds);
+  const frames = r.tiles.frames || [];
+  const frame = frames[S.wxOffset] || frames[0];
+  if (!frame) return;
+  const v = encodeURIComponent(frame.time + (frame.nowcast ? 'n' : 'f'));
+  const mk = (t, pane) => L.tileLayer(`/api/weather/tio/tile/{z}/{x}/{y}.png?f=${encodeURIComponent(frame.time)}&v=${v}`, { opacity: .62, minNativeZoom: t.zoom, maxNativeZoom: t.zoom,
+    maxZoom: 19, bounds: t.bounds, pane, attribution: 'Hujan &copy; Tomorrow.io', className: 'tio-tiles' });
+  const detail = frame.layers.find(t => t.zoom === r.tiles.zoom), coarse = frame.layers.find(t => t.zoom !== r.tiles.zoom);
   // Lapisan hanya dipakai bila tile-nya sudah lengkap di server (bisa tertunda karena kuota).
-  const full = (t) => t.available === undefined || t.available >= t.count;
-  const pick = () => {
-    const wantDetail = S.map.getZoom() >= detail.zoom && sumbar.pad(-0.05).contains(S.map.getCenter());
-    let use = wantDetail ? detail : coarse;
-    if (!full(use)) { const other = use === detail ? coarse : detail; if (full(other) || (other.available || 0) > (use.available || 0)) use = other; }
-    const want = use.layer;
-    for (const t of layers) if (t.layer !== want && group.hasLayer(t.layer)) group.removeLayer(t.layer);
-    if (!group.hasLayer(want)) group.addLayer(want);
+  const full = (t) => t && (t.available === undefined || t.available >= t.count);
+  const useDetail = detail && (full(detail) || !coarse?.available);
+  const group = L.layerGroup();
+  if (coarse) group.addLayer(mk(coarse, tioPane('tioCoarse', 251)));
+  if (useDetail) group.addLayer(mk(detail, tioPane('tioDetail', 252)));
+  const hole = () => {
+    const p = S.map.getPane('tioCoarse');
+    if (!p) return;
+    if (!useDetail) { p.style.clipPath = ''; return; }
+    const b = L.latLngBounds(detail.bounds), a = S.map.latLngToLayerPoint(b.getNorthWest()), c = S.map.latLngToLayerPoint(b.getSouthEast()), m = 99999;
+    p.style.clipPath = `polygon(evenodd, ${-m}px ${-m}px, ${m}px ${-m}px, ${m}px ${m}px, ${-m}px ${m}px, ${-m}px ${-m}px, ${a.x}px ${a.y}px, ${c.x}px ${a.y}px, ${c.x}px ${c.y}px, ${a.x}px ${c.y}px, ${a.x}px ${a.y}px)`;
   };
-  S.tioRainMove = pick;
-  S.map.on('moveend zoomend', pick);
-  pick();
-  S.layers.tio_rain = group.addTo(S.map);
+  S.tioRainMove = hole;
+  S.map.on('moveend zoomend', hole);
+  hole();
+  S.layers.tio_rain = group;
+  if (S.layerOn.tio_rain) group.addTo(S.map);
 }
 
 async function refreshTio() {
   if (!S.cfg?.settings?.tomorrow?.enabled) return;
   try { S.tio = await api('/api/weather/tio'); } catch (e) { S.tio = { error: e.message, points: [] }; }
   renderTio();
-  if (S.layerOn.tio_pts && S.tio.points?.length) drawTioPoints(S.tio);
-  if (S.layerOn.tio_rain && S.tio.tiles?.count) buildTioRain(S.tio);
+  if (S.layerOn.tio_pts && S.tio.points?.length && !S.wxOffset) drawTioPoints(S.tio);
+  if (S.layerOn.tio_rain && S.tio.tiles?.frames) buildTioRain(S.tio);
+  renderTimebar();
 }
 
 function renderTio() {
@@ -1031,7 +1238,7 @@ function renderTio() {
     return `<tr data-tio="${i}" style="cursor:pointer" title="Klik untuk melihat di peta"><td><b>${esc(p.name.replace(/^UP3\s+/i, ''))}</b><div class="small muted">${esc(p.desc)}, angin ${esc(p.ws)} km/j</div></td>
       <td><span class="chip ${e.cls}">${esc(e.t)}</span><div class="small muted">peluang maks ${esc(p.max_prob ?? '-')}%</div></td></tr>`;
   }).join('')}</tbody></table>
-  <p class="hint">Diperbarui ${ago(r.points_at)}. ${esc(r.note)}</p>`;
+  <p class="hint">Data diambil ${ago(r.points_at)} dan dihitung ulang tiap 10 menit dari cache (berlaku s.d. 5 hari). ${esc(r.note)}</p>`;
   $$('[data-tio]', box).forEach(tr => tr.onclick = () => { const p = pts[+tr.dataset.tio]; S.map.setView([p.lat, p.lon], 10); });
 }
 
@@ -1569,11 +1776,12 @@ async function adminConnectors(el) {
     <label class="check"><input type="checkbox" name="tio_en" ${c.tomorrow.enabled ? 'checked' : ''}> Aktifkan prakiraan Tomorrow.io (angin, hujan 6 jam per UP3, intensitas hujan saat ini)</label>
     <div class="grid2">
       <label class="f"><span>API key Tomorrow.io</span><input type="text" name="tio_key" value="${esc(c.tomorrow.api_key)}" autocomplete="off"></label>
-      <label class="check" style="margin-top:22px"><input type="checkbox" name="tio_tiles" ${c.tomorrow.rain_tiles !== false ? 'checked' : ''}> Ambil tile intensitas hujan (10 panggilan per pembaruan: Sumatra + detail Sumbar)</label>
-      <label class="f"><span>Interval pembaruan (menit, 30–360)</span><input type="number" name="tio_int" min="30" max="360" value="${esc(c.tomorrow.interval_min)}"></label>
+      <label class="check" style="margin-top:22px"><input type="checkbox" name="tio_tiles" ${c.tomorrow.rain_tiles !== false ? 'checked' : ''}> Tile hujan: sekarang, +1 dan +2 jam (±16 panggilan/jam)</label>
+      <label class="f"><span>Interval pembaruan titik UP3 (menit, 30–720)</span><input type="number" name="tio_int" min="30" max="720" value="${esc(c.tomorrow.interval_min)}"></label>
       <label class="f"><span>Jumlah lokasi (kantor UP3, 1–15)</span><input type="number" name="tio_pts" min="1" max="15" value="${esc(c.tomorrow.max_points)}"></label>
     </div>
     <p class="hint" id="tio-quota"></p>
+    <div id="api-usage" class="small" style="margin:8px 0"></div>
     <div class="row"><button type="button" class="btn btn-ghost btn-sm" id="btn-tio-test">Uji koneksi Tomorrow.io</button><span class="small muted" id="tio-test-res"></span></div>
     <p class="hint">Paket gratis: 25 panggilan/jam dan 500/hari. Server mengambil data terjadwal dan membaginya ke semua pengguna; API key tidak dikirim ke browser. Kualitas udara dan petir Tomorrow.io termasuk paket berbayar, jadi AQI tetap dari Open-Meteo. Data Tomorrow.io adalah model, bukan pengganti peringatan resmi BMKG.</p>
     <label class="f"><span>Tautan Windy</span><input type="text" name="windy" value="${esc(c.windy.url)}"></label>
@@ -1597,14 +1805,20 @@ async function adminConnectors(el) {
     try { await api('/api/admin/settings', { method: 'PUT', body }); toast('Pengaturan disimpan. Muat ulang halaman untuk menerapkan peta dasar.', 'ok'); S.cfg = await api('/api/config'); renderLeft(); renderRight(); setTimeout(refreshTio, 15000); } catch (x) { fail(x); }
   };
   const fc = $('#f-conn', el);
+  // Sama dengan tomorrow.plan_per_hour / effective_interval di server.
   const quota = () => {
-    const per = ((+fc.tio_pts.value || 8) + (fc.tio_tiles.checked ? 10 : 0)) * 60 / Math.max(30, +fc.tio_int.value || 60);
+    const pts = +fc.tio_pts.value || 8, tiles = fc.tio_tiles.checked ? 16 : 0;
+    const room = 461 / 24 - tiles;
+    const eff = Math.max(+fc.tio_int.value || 120, room > 0 ? Math.ceil(pts * 60 / room) : 360, 30);
+    const per = tiles + pts * 60 / eff;
     const q = $('#tio-quota', el);
-    q.textContent = `Perkiraan pemakaian ±${per.toFixed(0)} panggilan/jam, ±${(per * 24).toFixed(0)}/hari.` + (per > 22 || per * 24 > 470 ? ' Melebihi kuota gratis, tidak dapat disimpan.' : '');
-    q.style.color = per > 22 || per * 24 > 470 ? 'var(--bahaya)' : '';
+    q.textContent = `Perkiraan pemakaian ±${per.toFixed(1)} panggilan/jam, ±${(per * 24).toFixed(0)}/hari (batas aman 22/jam, 470/hari).`
+      + (eff > (+fc.tio_int.value || 120) ? ` Interval titik otomatis dipanjangkan menjadi ${eff} menit agar kuota harian aman.` : '')
+      + ' Setiap panggilan titik menyimpan prakiraan 120 jam + nowcast 60 menit + 5 hari, dipakai ulang sampai pembaruan berikutnya.';
   };
   ['tio_pts', 'tio_int', 'tio_tiles'].forEach(n => fc[n].oninput = fc[n].onchange = quota);
   quota();
+  renderApiUsage($('#api-usage', el));
   $('#btn-tio-test', el).onclick = async () => {
     const out = $('#tio-test-res', el);
     out.textContent = 'Menguji… (simpan pengaturan dulu bila API key baru diisi)';
@@ -1614,6 +1828,25 @@ async function adminConnectors(el) {
       out.style.color = 'var(--aman, #15803d)';
     } catch (x) { out.textContent = x.message; out.style.color = 'var(--bahaya)'; }
   };
+}
+
+async function renderApiUsage(box) {
+  if (!box) return;
+  try {
+    const u = await api('/api/admin/api-usage');
+    const t = u.tomorrow.usage;
+    const bar = (v, max) => `<div class="meter ${v / max > .85 ? 'hot' : ''}"><i style="width:${Math.min(100, 100 * v / max).toFixed(0)}%"></i></div>`;
+    const row = (name, o) => `<tr><td>${name}</td><td class="n">${num(o?.requests || 0)}</td><td class="n">${num(o?.cache_hits || 0)}</td><td class="small muted">${esc(o?.note || '')}</td></tr>`;
+    box.innerHTML = `<b>Pemakaian API</b>
+      <div class="grid2" style="margin:6px 0">
+        <div>Tomorrow.io jam ini: <b>${t.hour}</b> / ${t.hour_limit}${bar(t.hour, t.hour_limit)}</div>
+        <div>Tomorrow.io hari ini (UTC): <b>${t.day}</b> / ${t.day_limit}${bar(t.day, t.day_limit)}</div>
+      </div>
+      ${u.tomorrow.paused_until ? `<div class="notice warn">Tomorrow.io dijeda sampai ${fmtTime(u.tomorrow.paused_until)} (kuota jam habis).</div>` : ''}
+      <table class="t"><thead><tr><th>Sumber (sejak restart, hari ini)</th><th class="n">Ke internet</th><th class="n">Dari cache</th><th>Catatan</th></tr></thead><tbody>
+        ${row('BMKG', u.bmkg)}${row('Open-Meteo (per lokasi)', u.openmeteo)}</tbody></table>
+      <p class="hint">Tomorrow.io: 20 panggilan terakhir ${esc((u.tomorrow.recent_calls || []).map(c => c.kind).join(', ') || '—')}.</p>`;
+  } catch (e) { box.textContent = 'Pemakaian API: ' + e.message; }
 }
 
 async function adminWa(el) {
@@ -1636,6 +1869,16 @@ async function adminWa(el) {
       <label class="f"><span>Dampak minimal kejadian</span><select name="incident_min_severity">${S.cfg.severities.map(s => `<option ${s === w.incident_min_severity ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
     </div>
     <div class="row"><button class="btn">Simpan</button><input type="text" id="wa-test-to" placeholder="Nomor uji 628xx" style="max-width:200px"><button type="button" class="btn btn-ghost" id="wa-test">Kirim pesan uji</button></div></form>
+    <h3>Capture grup WhatsApp (panel kanan)</h3>
+    <form id="f-wag">
+      <label class="check"><input type="checkbox" name="enabled" ${c.wag.enabled ? 'checked' : ''}> Tampilkan pesan grup di panel kanan untuk pengguna yang login</label>
+      <div class="grid2">
+        <label class="f"><span>Alamat wa_gateway</span><input type="text" name="url" value="${esc(c.wag.url)}"></label>
+        <label class="f"><span>Nama grup</span><input type="text" name="group" value="${esc(c.wag.group)}"></label>
+      </div>
+      <label class="f"><span>API key gateway (scope read:messages)</span><input type="text" name="token" value="${esc(c.wag.token)}" autocomplete="off" placeholder="wak_…"></label>
+      <p class="hint">Buat API key di dashboard wa_gateway, batasi ke grup ini. Token hanya disimpan di server. Centang Gambar dan Dokumen pada Simpan media di gateway agar gambar dan PDF ikut tampil.</p>
+      <button class="btn">Simpan dan uji</button></form>
     <h3>Antrean terakhir</h3><div class="tablebox"><table class="t"><thead><tr><th>Waktu</th><th>Tujuan</th><th>Status</th><th>Pesan</th></tr></thead><tbody>
     ${n.notifications.map(x => `<tr><td>${fmtTime(x.created_at)}</td><td>${esc(x.target)}</td><td><span class="chip ${x.status === 'sent' ? 'ok' : x.status === 'failed' ? 'err' : 'warn'}">${esc(x.status)}</span>${x.error ? `<br><span class="small muted">${esc(x.error)}</span>` : ''}</td><td class="small" style="white-space:pre-wrap">${esc(x.message.slice(0, 160))}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">Belum ada notifikasi.</td></tr>'}</tbody></table></div>`;
   const f = $('#f-wa', el);
@@ -1646,6 +1889,20 @@ async function adminWa(el) {
     const body = { wa: { enabled: f.enabled.checked, url: f.url.value.trim(), app_url: f.app_url.value.trim(), headers, body_template: f.body_template.value,
       targets: f.targets.value.split(/\n+/).map(s => s.trim()).filter(Boolean), notify_bmkg: f.notify_bmkg.checked, notify_incident: f.notify_incident.checked, incident_min_severity: f.incident_min_severity.value } };
     try { await api('/api/admin/settings', { method: 'PUT', body }); toast('Pengaturan WA disimpan.', 'ok'); adminWa(el); } catch (x) { fail(x); }
+  };
+  const fg = $('#f-wag', el);
+  fg.onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const body = { wag: { enabled: fg.enabled.checked, url: fg.url.value.trim(), group: fg.group.value.trim(), token: fg.token.value.trim() } };
+      await api('/api/admin/settings', { method: 'PUT', body });
+      S.cfg = await api('/api/config');
+      renderRight();
+      if (!body.wag.enabled) return toast('Capture WhatsApp dimatikan.', 'ok');
+      S.wag = await api('/api/wag/messages');
+      toast(S.wag.configured ? `Terhubung ke grup, ${S.wag.messages.length} pesan terbaca.` : 'Disimpan. API key gateway belum diisi.', S.wag.configured ? 'ok' : '');
+    } catch (x) { fail(x); }
+    refreshWag();
   };
   $('#wa-test', el).onclick = async () => {
     try { const r = await api('/api/admin/notifications/test', { method: 'POST', body: { target: $('#wa-test-to').value } }); toast(`Gateway menjawab HTTP ${r.status}: ${r.response.slice(0, 120)}`, r.status < 300 ? 'ok' : 'err'); } catch (x) { fail(x); }

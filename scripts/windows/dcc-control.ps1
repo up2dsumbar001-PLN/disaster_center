@@ -1,5 +1,5 @@
 <#
-  Panel kendali Disaster Information Center.
+  Panel kendali GRIDCAST (Weather Intelligence & Grid Asset Monitoring).
     -Action start    menyalakan server (lewat Scheduled Task bila terpasang)
     -Action stop     menghentikan server sekarang (autostart saat Windows menyala TETAP aktif)
     -Action restart  hentikan lalu nyalakan lagi
@@ -180,11 +180,11 @@ function Follow-Log {
 }
 
 function Show-Viewer {
-  $host.UI.RawUI.WindowTitle = "DCC Disaster Information Center - Viewer"
+  $host.UI.RawUI.WindowTitle = "GRIDCAST - Viewer"
   while ($true) {
     Clear-Host
     Write-Host "=====================================================================" -ForegroundColor Cyan
-    Write-Host "  DISASTER INFORMATION CENTER  -  DCC UP2D Sumatera Barat" -ForegroundColor Cyan
+    Write-Host "  GRIDCAST  -  Weather Intelligence & Grid Asset Monitoring  -  PLN UP2D Sumatera Barat" -ForegroundColor Cyan
     Write-Host ("  {0}" -f (Get-Date -Format "dddd, dd MMMM yyyy HH:mm:ss")) -ForegroundColor Cyan
     Write-Host "=====================================================================" -ForegroundColor Cyan
     Show-Status

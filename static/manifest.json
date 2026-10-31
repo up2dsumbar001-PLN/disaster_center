@@ -1,0 +1,11 @@
+{
+  "name": "GRIDCAST · Weather Intelligence & Grid Asset Monitoring",
+  "short_name": "GRIDCAST",
+  "description": "Pemantauan dan prakiraan cuaca terintegrasi dengan peta aset jaringan distribusi listrik. PLN UP2D Sumatera Barat.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#050d17",
+  "theme_color": "#0b1d30",
+  "lang": "id",
+  "icons": [{ "src": "/static/favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

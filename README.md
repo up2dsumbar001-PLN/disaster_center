@@ -1,8 +1,14 @@
-# Disaster Information Center: DCC UP2D Sumatera Barat
+# GRIDCAST
 
-Web app untuk dispatcher DCC. Peta jaringan distribusi 20 kV disatukan dengan peringatan resmi BMKG, pencatatan kejadian bencana, polygon dampak, foto dokumentasi, dan rekap gardu serta pelanggan di dalam area. Aplikasi ini **mendukung keputusan** operator. Aplikasi tidak menjalankan perintah SCADA atau switching.
+**Weather Intelligence & Grid Asset Monitoring** · PLN UP2D Sumatera Barat
 
-Spesifikasi produk: [PRD.md](./PRD.md) v0.3. Status setiap butir PRD: [STATUS-IMPLEMENTASI.md](./STATUS-IMPLEMENTASI.md).
+Pemantauan dan prakiraan cuaca terintegrasi dengan peta aset jaringan distribusi listrik. Web app untuk dispatcher DCC (sebelumnya bernama *Disaster Information Center*). Peta jaringan distribusi 20 kV disatukan dengan peringatan resmi BMKG, pencatatan kejadian bencana, polygon dampak, foto dokumentasi, dan rekap gardu serta pelanggan di dalam area. Aplikasi ini **mendukung keputusan** operator. Aplikasi tidak menjalankan perintah SCADA atau switching.
+
+Spesifikasi produk: [PRD.md](./PRD.md) v0.3. Status setiap butir PRD: [STATUS-IMPLEMENTASI.md](./STATUS-IMPLEMENTASI.md). Pemakaian kuota API: [ANALISIS-PEMAKAIAN-API.md](./ANALISIS-PEMAKAIAN-API.md).
+
+Tampilan: peta penuh dengan panel kaca yang bisa dilipat (tombol di tepi panel, atau tombol `[` dan `]`), tema gelap/terang (ikon di header), dan linimasa cuaca *Sekarang / +1 jam / +2 jam* yang muncul saat lapisan hujan, angin, atau AQI dinyalakan.
+
+Identifier teknis sengaja tidak diubah saat rebranding: database `disaster_center`, folder aplikasi, Scheduled Task `DCC-DisasterCenter`, aturan firewall, variabel `DCC_*`, paket Python `dcc`, dan nama berkas `*_disasterinfo.bat`.
 
 ## Arsitektur (tanpa Docker)
 
@@ -76,13 +82,20 @@ Buka **Administrasi**, lalu **Notifikasi WA**. Isi URL endpoint kirim pesan pada
 
 Pesan masuk antrean di database dan dikirim ulang otomatis (backoff) bila gateway mati. Tombol **Kirim pesan uji** memeriksa format API gateway.
 
+Panel kanan berjudul nama grup, `BMKGSUMBAR&Stakeholder`, menampilkan pesan grup itu hasil capture gateway, termasuk gambar dan PDF, khusus pengguna yang login. Hanya baca: GRIDCAST tidak mengirim apa pun ke grup. Pasangnya:
+1. Di dashboard gateway, buat API key scope `read:messages`, batasi ke grup ini.
+2. Di **Grup & Izin** gateway, centang **Gambar** dan **Dokumen** pada **Simpan media** grup ini. Media yang masuk sebelum dicentang tidak tersimpan.
+3. Di GRIDCAST, buka **Administrasi**, **Notifikasi WA**, bagian **Capture grup WhatsApp**, isi API key, lalu **Simpan dan uji**.
+
+Token hanya disimpan di server. Browser mengambil pesan lewat `/api/wag/messages` dan media lewat `/api/wag/media/{id}` (maksimal 50 MB, hanya pesan dari grup ini). Nomor telepon anggota tidak diteruskan ke browser.
+
 ## Struktur kode
 
 | Path | Isi |
 |---|---|
 | `dcc/app.py` | Rute API, otorisasi, audit |
 | `dcc/collector.py` | Collector BMKG, paparan aset, adapter Open-Meteo/RainViewer, antrean WA |
-| `dcc/tomorrow.py` | Adapter Tomorrow.io: prakiraan 6 jam per UP3, tile hujan, penjaga kuota gratis |
+| `dcc/tomorrow.py` | Adapter Tomorrow.io: penjadwal kuota berprioritas, prakiraan 120 jam + nowcast per menit per UP3, tile hujan 3 frame, cache disk `data\tomorrow` |
 | `dcc/cap.py` | Parser CAP BMKG (Update/Cancel/Test/expired) |
 | `dcc/geo.py` | Geometri: covers, lubang polygon, koridor, validasi polygon |
 | `dcc/analysis.py` | Rekap gardu/pelanggan per area (PRD §7) |
@@ -90,7 +103,7 @@ Pesan masuk antrean di database dan dikirim ulang otomatis (backoff) bila gatewa
 | `dcc/customers.py` | Unggah jumlah pelanggan Excel/CSV |
 | `dcc/schema.sql` | Skema database (migrasi otomatis saat start) |
 | `static/` | Frontend (index.html, app.js, app.css, Leaflet lokal) |
-| `tests/` | 28 pengujian (model + API end-to-end ke PostgreSQL) |
+| `tests/` | 30 pengujian (model + API end-to-end ke PostgreSQL) |
 | `scripts/windows/` | setup, run, install-service, firewall, backup |
 | `_arsip_draft_nextjs/` | Draft lama (Next.js/Cloudflare), disimpan untuk referensi |
 

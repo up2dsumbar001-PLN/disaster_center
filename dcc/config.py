@@ -47,8 +47,9 @@ class Settings:
     bmkg_interval_seconds: int = 60
     max_photo_mb: int = 10
     max_import_mb: int = 150
-    site_title: str = "Disaster Information Center"
-    site_subtitle: str = "DCC UP2D Sumatera Barat, jaringan distribusi 20 kV"
+    site_title: str = "GRIDCAST"
+    site_subtitle: str = "Weather Intelligence & Grid Asset Monitoring"
+    site_unit: str = "PLN UP2D Sumatera Barat"
 
     def ip_allowed(self, ip: str | None) -> bool:
         if not self.allowed_networks:
@@ -101,4 +102,5 @@ def load_settings(env_file: Path | None = None) -> Settings:
         max_import_mb=int(e("DCC_MAX_IMPORT_MB", "150")),
         site_title=e("DCC_SITE_TITLE", Settings.site_title),
         site_subtitle=e("DCC_SITE_SUBTITLE", Settings.site_subtitle),
+        site_unit=e("DCC_SITE_UNIT", Settings.site_unit),
     )

@@ -16,6 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 from . import appsettings, cap, geo
 from .db import J
@@ -28,6 +29,7 @@ BMKG_QUAKE = "https://data.bmkg.go.id/DataMKG/TEWS/autogempa.json"
 BMKG_QUAKE_LISTS = {"dirasakan": "https://data.bmkg.go.id/DataMKG/TEWS/gempadirasakan.json",
                     "m5": "https://data.bmkg.go.id/DataMKG/TEWS/gempaterkini.json"}
 PADANG = (-0.95, 100.35)
+OM_TTL = 10800  # detik; Open-Meteo memperbarui model per jam, deret 48 jam disimpan 3 jam
 BMKG_FORECAST = "https://api.bmkg.go.id/publik/prakiraan-cuaca?adm4={}"
 UA = "DCC-DisasterCenter/1.0 (+intranet PLN UP2D Sumbar)"
 SUMBAR_BBOX = (98.5, -3.6, 101.95, 0.95)
@@ -36,6 +38,20 @@ EXPOSE_POINT_KINDS = ("trafo", "gi", "gh", "recloser", "lbs", "pltd")
 
 class FetchError(Exception):
     pass
+
+
+# Penghitung permintaan keluar per sumber (hari UTC berjalan), untuk analisa pemakaian API di Admin.
+USAGE: dict = {}
+_usage_lock = threading.Lock()
+
+
+def count(source: str, n: int = 1, cached: bool = False):
+    day = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+    with _usage_lock:
+        u = USAGE.setdefault(source, {"day": day, "requests": 0, "cache_hits": 0})
+        if u["day"] != day:
+            u.update(day=day, requests=0, cache_hits=0)
+        u["cache_hits" if cached else "requests"] += n
 
 
 def http_get(url: str, timeout: float = 15.0, max_bytes: int = 8_000_000, accept: str = "*/*") -> bytes:
@@ -193,6 +209,7 @@ class Collector:
         try:
             if feed_text is None:
                 feed_text = http_get(BMKG_FEED, accept="application/rss+xml,application/xml").decode("utf-8", "replace")
+                count("bmkg")
             items = cap.feed_items(feed_text)
         except (FetchError, cap.CapError) as exc:
             set_health(db, "bmkg_cap", "error", str(exc))
@@ -205,12 +222,22 @@ class Collector:
                 fname = u.path.rsplit("/", 1)[-1]
                 if re.fullmatch(r"[A-Za-z0-9_-]{1,180}\.xml", fname) and fname not in links:
                     links.append(fname)
-        ok, failed = 0, []
+        ok, failed, skipped = 0, [], 0
+        known = {r["source_link"] for r in db.all("SELECT source_link FROM weather_alerts WHERE source_link = ANY(%s::text[])",
+                                                   ("{" + ",".join('"' + BMKG_CAP_BASE + f + '"' for f in links[:25]) + "}",))} \
+            if links and cap_texts is None else set()
         for fname in links[:25]:
+            if BMKG_CAP_BASE + fname in known:
+                # Berkas CAP tidak berubah setelah terbit (pembaruan memakai ID baru), jadi tidak diunduh ulang.
+                skipped += 1
+                ok += 1
+                count("bmkg", cached=True)
+                continue
             try:
                 text = (cap_texts or {}).get(fname)
                 if text is None:
                     text = http_get(BMKG_CAP_BASE + fname, accept="application/xml").decode("utf-8", "replace")
+                    count("bmkg")
                 w = cap.parse_cap(text)
                 self._store_warning(w, BMKG_CAP_BASE + fname)
                 ok += 1
@@ -218,7 +245,7 @@ class Collector:
                 failed.append(f"{fname}: {exc}")
         state = "ok" if not failed else ("partial" if ok else "error")
         set_health(db, "bmkg_cap", state, "; ".join(failed)[:1000] or None,
-                   {"items_sumbar": len(items), "cap_ok": ok, "cap_failed": len(failed)})
+                   {"items_sumbar": len(items), "cap_ok": ok, "cap_failed": len(failed), "cap_cached": skipped})
         n = self._recompute_exposures()
         return {"state": state, "items": len(items), "cap_ok": ok, "failed": failed, "active": n}
 
@@ -267,6 +294,10 @@ class Collector:
                f"Paparan aset: {len(trafo)} gardu/trafo, {len(lines)} penyulang JTM.\n"
                + (f"Penyulang: {', '.join(feeders[:15])}{' …' if len(feeders) > 15 else ''}\n" if feeders else "")
                + f"Sumber: BMKG (CAP {w.id}). Verifikasi lapangan sesuai SOP.\n{cfg['wa'].get('app_url', '')}")
+        # Satu pesan WA per isi peringatan: penerbitan ulang BMKG dengan ID baru tidak dikirim lagi.
+        for prev in w.republished:
+            if self.db.one("SELECT 1 AS x FROM notifications WHERE dedupe_key LIKE %s LIMIT 1", (f"cap:{prev}:%",)):
+                return
         enqueue(self.db, cfg, f"cap:{w.id}", msg)
 
     # ---------------------------------------------------------- quake
@@ -274,7 +305,10 @@ class Collector:
         """Daftar 15 gempa dirasakan dan 15 gempa M5+ terakhir (BMKG), disimpan di memori."""
         for key, url in BMKG_QUAKE_LISTS.items():
             try:
-                raw = (texts or {}).get(key) or http_get(url, accept="application/json").decode("utf-8", "replace")
+                raw = (texts or {}).get(key)
+                if raw is None:
+                    raw = http_get(url, accept="application/json").decode("utf-8", "replace")
+                    count("bmkg")
                 self.quake_lists[key] = {"fetched_at": dt.datetime.now(dt.timezone.utc).isoformat(),
                                          "items": [quake_item(g) for g in json.loads(raw)["Infogempa"]["gempa"]][:15]}
             except (FetchError, KeyError, ValueError, TypeError) as exc:
@@ -285,6 +319,7 @@ class Collector:
         try:
             if text is None:
                 text = http_get(BMKG_QUAKE, accept="application/json").decode("utf-8", "replace")
+                count("bmkg")
             data = json.loads(text)["Infogempa"]["gempa"]
             lat, lon = (float(v) for v in data["Coordinates"].split(",")[:2])
             q = {"datetime": data.get("DateTime"), "tanggal": data.get("Tanggal"), "jam": data.get("Jam"),
@@ -300,17 +335,57 @@ class Collector:
             return None
 
     # ------------------------------------------------------- forecast
+    def _cache_dir(self, sub: str):
+        st = getattr(self.ctx, "settings", None)
+        if st is None:
+            return None
+        d = Path(st.data_dir) / "cache" / sub
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _disk_get(self, sub: str, name: str, ttl: float):
+        d = self._cache_dir(sub)
+        f = d / name if d else None
+        if f and f.exists():
+            try:
+                rec = json.loads(f.read_text(encoding="utf-8"))
+                if time.time() - rec["at"] < ttl:
+                    return rec
+            except (ValueError, KeyError, OSError):
+                pass
+        return None
+
+    def _disk_put(self, sub: str, name: str, data) -> dict:
+        rec = {"at": time.time(), "data": data}
+        d = self._cache_dir(sub)
+        if d:
+            try:
+                tmp = d / (name + ".tmp")
+                tmp.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+                tmp.replace(d / name)
+            except OSError as exc:  # pragma: no cover
+                log.warning("cache %s/%s gagal disimpan: %s", sub, name, exc)
+        return rec
+
     def forecast(self, adm4: str) -> dict:
+        """Prakiraan BMKG 3 harian per desa. BMKG memperbarui 2 kali sehari; cache disk 3 jam."""
         if not re.fullmatch(r"\d{2}\.\d{2}\.\d{2}\.\d{4}", adm4 or ""):
             raise ValueError("Kode ADM4 harus berformat 13.71.01.1001")
         hit = self.forecast_cache.get(adm4)
-        if hit and time.time() - hit[0] < 1800:
+        if hit and time.time() - hit[0] < 10800:
+            count("bmkg", cached=True)
             return hit[1]
-        data = json.loads(http_get(BMKG_FORECAST.format(adm4), accept="application/json"))
-        self.forecast_cache[adm4] = (time.time(), data)
+        rec = self._disk_get("bmkg_forecast", adm4 + ".json", 10800)
+        if rec is None:
+            data = json.loads(http_get(BMKG_FORECAST.format(adm4), accept="application/json"))
+            count("bmkg")
+            rec = self._disk_put("bmkg_forecast", adm4 + ".json", data)
+        else:
+            count("bmkg", cached=True)
+        self.forecast_cache[adm4] = (rec["at"], rec["data"])
         if len(self.forecast_cache) > 300:
             self.forecast_cache.pop(next(iter(self.forecast_cache)))
-        return data
+        return rec["data"]
 
     # ------------------------------------------------ optional adapters
     def _cached(self, key, ttl, fn):
@@ -321,76 +396,133 @@ class Collector:
         self.adapter_cache[key] = (time.time(), val)
         return val
 
-    def wind_grid(self) -> dict:
+    def _om_series(self, key: str, fetch, n_points: int) -> dict:
+        """Deret per jam Open-Meteo (48 jam) disimpan di disk 3 jam dan dipakai untuk jam mana pun di dalamnya.
+
+        Open-Meteo menghitung setiap lokasi sebagai satu panggilan; dengan cara ini grid angin (±130 lokasi)
+        cukup diambil 8 kali sehari, bukan setiap kali lapisan dibuka.
+        """
+        mem = self.adapter_cache.get(key)
+        if mem and time.time() - mem[0] < OM_TTL:
+            count("openmeteo", n_points, cached=True)
+            return mem[1]
+        rec = self._disk_get("openmeteo", key + ".json", OM_TTL)
+        if rec is None:
+            rec = self._disk_put("openmeteo", key + ".json", fetch())
+            count("openmeteo", n_points)
+        else:
+            count("openmeteo", n_points, cached=True)
+        self.adapter_cache[key] = (rec["at"], rec)
+        return rec
+
+    @staticmethod
+    def _hour_index(times: list, at: float) -> int:
+        target = dt.datetime.fromtimestamp(at, dt.timezone.utc).strftime("%Y-%m-%dT%H:00")
+        if target in times:
+            return times.index(target)
+        raise FetchError("Data tersimpan tidak mencakup jam yang diminta")
+
+    def wind_grid(self, offset_h: int = 0) -> dict:
         cfg = appsettings.get(self.db)["openmeteo"]
         if not cfg.get("enabled"):
             raise PermissionError("Adapter Open-Meteo belum diaktifkan Admin.")
+        lats, lons = [], []
+        lat = SUMBAR_BBOX[1] + 0.2
+        while lat <= SUMBAR_BBOX[3]:
+            lon = SUMBAR_BBOX[0] + 0.2
+            while lon <= SUMBAR_BBOX[2]:
+                lats.append(round(lat, 2))
+                lons.append(round(lon, 2))
+                lon += 0.35
+            lat += 0.35
 
         def fetch():
-            lats, lons = [], []
-            lat = SUMBAR_BBOX[1] + 0.2
-            while lat <= SUMBAR_BBOX[3]:
-                lon = SUMBAR_BBOX[0] + 0.2
-                while lon <= SUMBAR_BBOX[2]:
-                    lats.append(round(lat, 2))
-                    lons.append(round(lon, 2))
-                    lon += 0.35
-                lat += 0.35
             host = "customer-api.open-meteo.com" if cfg.get("api_key") else "api.open-meteo.com"
             q = {"latitude": ",".join(map(str, lats)), "longitude": ",".join(map(str, lons)),
-                 "current": "wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation,cape",
-                 "wind_speed_unit": "kmh", "timezone": "UTC"}
+                 "hourly": "wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation,cape",
+                 "wind_speed_unit": "kmh", "timezone": "UTC", "past_hours": 1, "forecast_hours": 48}
             if cfg.get("api_key"):
                 q["apikey"] = cfg["api_key"]
-            data = json.loads(http_get(f"https://{host}/v1/forecast?" + urllib.parse.urlencode(q), timeout=25))
+            data = json.loads(http_get(f"https://{host}/v1/forecast?" + urllib.parse.urlencode(q), timeout=40,
+                                       max_bytes=20_000_000))
             data = data if isinstance(data, list) else [data]
-            pts = []
-            for d in data:
-                c = d.get("current") or {}
-                pts.append({"lat": d.get("latitude"), "lon": d.get("longitude"), "ws": c.get("wind_speed_10m"),
-                            "wd": c.get("wind_direction_10m"), "wg": c.get("wind_gusts_10m"),
-                            "rain": c.get("precipitation"), "cape": c.get("cape"), "time": c.get("time")})
-            return {"source": "Open-Meteo (model NWP)", "level": "10 m di atas permukaan", "unit": "km/j",
-                    "direction_note": "Arah panah = arah angin bertiup (menuju). Nilai derajat = arah datang angin.",
-                    "cape_note": "CAPE adalah indikasi energi konvektif model, BUKAN deteksi awan Cb.",
-                    "fetched_at": dt.datetime.now(dt.timezone.utc).isoformat(), "points": pts}
+            return [{"lat": d.get("latitude"), "lon": d.get("longitude"), "hourly": d.get("hourly") or {}} for d in data]
 
-        return self._cached("wind", 900, fetch)
+        rec = self._om_series("wind", fetch, len(lats))
+        at = time.time() + 3600 * offset_h
+        pts = []
+        for d in rec["data"]:
+            h = d["hourly"]
+            try:
+                k = self._hour_index(h.get("time") or [], at)
+            except FetchError:
+                continue
+            g = lambda name: (h.get(name) or [None] * (k + 1))[k]
+            pts.append({"lat": d["lat"], "lon": d["lon"], "ws": g("wind_speed_10m"), "wd": g("wind_direction_10m"),
+                        "wg": g("wind_gusts_10m"), "rain": g("precipitation"), "cape": g("cape"), "time": h["time"][k]})
+        if not pts:
+            raise FetchError("Data angin tersimpan sudah tidak mencakup jam ini")
+        return {"source": "Open-Meteo (model NWP)", "level": "10 m di atas permukaan", "unit": "km/j",
+                "direction_note": "Arah panah = arah angin bertiup (menuju). Nilai derajat = arah datang angin.",
+                "cape_note": "CAPE adalah indikasi energi konvektif model, BUKAN deteksi awan Cb.",
+                "fetched_at": dt.datetime.fromtimestamp(rec["at"], dt.timezone.utc).isoformat(),
+                "offset_h": offset_h, "points": pts}
 
-    def aqi_points(self) -> dict:
+    def aqi_points(self, offset_h: int = 0) -> dict:
         cfg = appsettings.get(self.db)["openmeteo"]
         if not cfg.get("enabled"):
             raise PermissionError("Adapter Open-Meteo belum diaktifkan Admin.")
         index = self.ctx.index
+        offices = [r for r in index.by_kind.get("kantor", []) if re.match(r"^(UP3|ULP)\b", r["name"] or "", re.I)][:40]
+        if not offices:
+            offices = [{"name": "Padang", "lat": -0.95, "lon": 100.35}]
 
         def fetch():
-            offices = [r for r in index.by_kind.get("kantor", []) if re.match(r"^(UP3|ULP)\b", r["name"] or "", re.I)][:40]
-            if not offices:
-                offices = [{"name": "Padang", "lat": -0.95, "lon": 100.35}]
             host = "customer-air-quality-api.open-meteo.com" if cfg.get("api_key") else "air-quality-api.open-meteo.com"
             q = {"latitude": ",".join(str(round(o["lat"], 3)) for o in offices),
                  "longitude": ",".join(str(round(o["lon"], 3)) for o in offices),
-                 "current": "us_aqi,pm2_5,pm10", "timezone": "UTC"}
+                 "hourly": "us_aqi,pm2_5,pm10", "timezone": "UTC", "past_hours": 1, "forecast_hours": 48}
             if cfg.get("api_key"):
                 q["apikey"] = cfg["api_key"]
-            data = json.loads(http_get(f"https://{host}/v1/air-quality?" + urllib.parse.urlencode(q), timeout=25))
+            data = json.loads(http_get(f"https://{host}/v1/air-quality?" + urllib.parse.urlencode(q), timeout=40,
+                                       max_bytes=20_000_000))
             data = data if isinstance(data, list) else [data]
-            pts = []
-            for o, d in zip(offices, data):
-                c = d.get("current") or {}
-                pts.append({"name": o["name"], "lat": o["lat"], "lon": o["lon"], "us_aqi": c.get("us_aqi"),
-                            "pm2_5": c.get("pm2_5"), "pm10": c.get("pm10"), "time": c.get("time")})
-            return {"source": "Open-Meteo Air Quality (model CAMS global)", "scale": "US AQI",
-                    "note": "Model global resolusi ±40 km; bukan ISPU KLHK dan bukan sensor di gardu.",
-                    "fetched_at": dt.datetime.now(dt.timezone.utc).isoformat(), "points": pts}
+            return [{"name": o["name"], "lat": o["lat"], "lon": o["lon"], "hourly": d.get("hourly") or {}}
+                    for o, d in zip(offices, data)]
 
-        return self._cached("aqi", 1800, fetch)
+        rec = self._om_series("aqi", fetch, len(offices))
+        at = time.time() + 3600 * offset_h
+        pts = []
+        for d in rec["data"]:
+            h = d["hourly"]
+            try:
+                k = self._hour_index(h.get("time") or [], at)
+            except FetchError:
+                continue
+            g = lambda name: (h.get(name) or [None] * (k + 1))[k]
+            pts.append({"name": d["name"], "lat": d["lat"], "lon": d["lon"], "us_aqi": g("us_aqi"),
+                        "pm2_5": g("pm2_5"), "pm10": g("pm10"), "time": h["time"][k]})
+        if not pts:
+            raise FetchError("Data kualitas udara tersimpan sudah tidak mencakup jam ini")
+        return {"source": "Open-Meteo Air Quality (model CAMS global)", "scale": "US AQI",
+                "note": "Model global resolusi ±40 km; bukan ISPU KLHK dan bukan sensor di gardu.",
+                "fetched_at": dt.datetime.fromtimestamp(rec["at"], dt.timezone.utc).isoformat(),
+                "offset_h": offset_h, "points": pts}
+
+    def om_usage(self) -> dict:
+        return {**USAGE.get("openmeteo", {}), "ttl_min": OM_TTL // 60,
+                "note": "Open-Meteo menghitung tiap lokasi sebagai 1 panggilan (gratis 10.000/hari, non-komersial)."}
+
+    def bmkg_usage(self) -> dict:
+        return {**USAGE.get("bmkg", {}), "note": "Batas BMKG 60 permintaan/menit per IP."}
 
     def radar_meta(self) -> dict:
         if not appsettings.get(self.db)["rainviewer"].get("enabled"):
             raise PermissionError("Lapisan radar RainViewer belum diaktifkan Admin.")
-        return self._cached("radar", 300, lambda: json.loads(
-            http_get("https://api.rainviewer.com/public/weather-maps.json", timeout=15)))
+        def fetch():
+            count("rainviewer")
+            return json.loads(http_get("https://api.rainviewer.com/public/weather-maps.json", timeout=15))
+        return self._cached("radar", 300, fetch)
 
     # ---------------------------------------------------- simulation
     def start_simulation(self) -> cap.Warning:

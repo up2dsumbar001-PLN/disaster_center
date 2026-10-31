@@ -12,6 +12,7 @@ import re
 import threading
 import time
 import traceback
+import urllib.parse
 from pathlib import Path
 
 from starlette.applications import Starlette
@@ -22,7 +23,7 @@ from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, R
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import analysis, appsettings, assets, cap, collector, customers, geo, kml_import, photos, security, tomorrow
+from . import analysis, appsettings, assets, cap, collector, customers, geo, kml_import, photos, security, tomorrow, wag
 from .config import BASE_DIR, Settings, load_settings
 from .db import Database, J
 
@@ -46,6 +47,7 @@ class Ctx:
         self.db = db
         self.index = assets.AssetIndex()
         self.collector = collector.Collector(self)
+        self.wag = wag.Wag(self)
         self.import_job: dict = {"state": "idle"}
         self.import_lock = threading.Lock()
         self.started_at = time.time()
@@ -79,10 +81,12 @@ class NetworkGuard:
             if message["type"] == "http.response.start":
                 h = message.setdefault("headers", [])
                 h += [(b"x-content-type-options", b"nosniff"), (b"x-frame-options", b"SAMEORIGIN"),
-                      (b"referrer-policy", b"strict-origin-when-cross-origin"),
-                      (b"content-security-policy",
-                       b"default-src 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; "
-                       b"script-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'")]
+                      (b"referrer-policy", b"strict-origin-when-cross-origin")]
+                # Penampil PDF browser kosong di bawah default-src; respons PDF membawa CSP sendiri.
+                if not any(k == b"content-security-policy" for k, _ in h):
+                    h.append((b"content-security-policy",
+                              b"default-src 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; "
+                              b"script-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"))
             await send(message)
 
         return await self.app(scope, receive, send_wrapped)
@@ -273,7 +277,7 @@ def _config(c: Call):
     cfg = appsettings.get(c.ctx.db)
     cats = c.ctx.db.all("SELECT code, label, color FROM incident_categories WHERE active ORDER BY sort, label")
     st = c.ctx.settings
-    return {"title": st.site_title, "subtitle": st.site_subtitle, "role": c.role,
+    return {"title": st.site_title, "subtitle": st.site_subtitle, "unit": st.site_unit, "role": c.role,
             "user": jsonable(c.user) if c.user else None, "settings": appsettings.public_view(cfg),
             "categories": cats, "severities": SEVERITIES, "statuses": STATUSES,
             "kinds": kml_import.KIND_LABEL, "max_photo_mb": st.max_photo_mb, "max_import_mb": st.max_import_mb}
@@ -459,7 +463,9 @@ def _alert_dict(w: cap.Warning, exposure: dict, reviews: dict, simulated=False) 
     return {"id": w.id, "title": w.title, "description": w.description, "instruction": w.instruction,
             "severity": w.severity, "certainty": w.certainty, "urgency": w.urgency, "sent": w.sent,
             "effective": w.effective, "expires": w.expires, "msg_type": w.msg_type, "areas_text": w.areas_text,
-            "areas": w.areas, "exposure": exposure, "reviews": reviews.get(w.id, []), "simulated": simulated}
+            "areas": w.areas, "exposure": exposure, "simulated": simulated, "republished": w.republished,
+            "reviews": sorted([r for i in [w.id, *w.republished] for r in reviews.get(i, [])],
+                              key=lambda r: str(r.get("reviewed_at")))}
 
 
 def _exposure_counts(ctx: Ctx, ids: list[int]) -> dict:
@@ -485,9 +491,10 @@ def _alerts(c: Call):
     for r in exp_rows:
         by_alert.setdefault(r["alert_id"], []).append(r["asset_id"])
     reviews: dict = {}
+    rev_ids = ids + [i for w in active for i in w.republished]  # tinjauan pada pesan lama tetap terbawa
     if ids and c.role != "guest":
         for r in ctx.db.all("SELECT alert_id, user_name, reviewed_at, note FROM alert_reviews WHERE alert_id = ANY(%s::text[]) "
-                            "ORDER BY reviewed_at", ("{" + ",".join('"' + i.replace('"', '') + '"' for i in ids) + "}",)):
+                            "ORDER BY reviewed_at", ("{" + ",".join('"' + i.replace('"', '') + '"' for i in rev_ids) + "}",)):
             reviews.setdefault(r["alert_id"], []).append(jsonable(r))
     alerts = [_alert_dict(w, _exposure_counts(ctx, by_alert.get(w.id, [])), reviews) for w in active]
     if ctx.collector.simulation and c.role != "guest":
@@ -570,10 +577,70 @@ def _adapter(fn):
 def _tio_tile(c: Call):
     z, x, y = (int(c.path[k]) for k in ("z", "x", "y"))
     try:
-        png = c.ctx.collector.tomorrow.tile(z, x, y)
+        png = c.ctx.collector.tomorrow.tile(z, x, y, c.params.get("f") or None)
     except PermissionError as e:
         raise ApiError(404, str(e))
-    return Response(png, media_type="image/png", headers={"Cache-Control": "private, max-age=600"})
+    # Tile untuk satu jam berlaku tidak berubah isinya kecuali disegarkan nowcast (parameter v berubah).
+    return Response(png, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
+
+
+def _wag_messages(c: Call):
+    try:
+        return c.ctx.wag.messages()
+    except wag.WagError as e:
+        raise ApiError(502, str(e))
+
+
+def _wag_media(c: Call):
+    mid = c.path["id"]
+    need(re.fullmatch(r"[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}", mid), "ID media tidak valid.")
+    try:
+        data, ctype, name = c.ctx.wag.media(mid)
+    except wag.WagNotFound as e:
+        raise ApiError(404, str(e))
+    except wag.WagError as e:
+        raise ApiError(502, str(e))
+    inline = ctype in wag.INLINE_TYPES and c.params.get("download") != "1"
+    headers = {"Cache-Control": "private, max-age=86400",
+               "Content-Disposition": f"{'inline' if inline else 'attachment'}; "
+                                      f"filename*=UTF-8''{urllib.parse.quote(name, safe='')}"}
+    if ctype == "application/pdf":
+        headers["Content-Security-Policy"] = "frame-ancestors 'self'; base-uri 'none'"
+    return Response(data, media_type=ctype if ctype in wag.INLINE_TYPES else "application/octet-stream", headers=headers)
+
+
+def _offset(c: Call) -> int:
+    try:
+        return max(0, min(72, int(c.params.get("h") or 0)))
+    except ValueError:
+        raise ApiError(422, "Parameter h harus jam (0-72).")
+
+
+def _api_usage(c: Call):
+    col = c.ctx.collector
+    return {"tomorrow": col.tomorrow.usage_report(), "openmeteo": col.om_usage(), "bmkg": col.bmkg_usage()}
+
+
+def _om_view(kind: str):
+    def h(c: Call):
+        col = c.ctx.collector
+        try:
+            return col.wind_grid(_offset(c)) if kind == "wind" else col.aqi_points(_offset(c))
+        except PermissionError as e:
+            raise ApiError(404, str(e))
+        except collector.FetchError as e:
+            raise ApiError(502, f"Sumber tidak tersedia: {e}")
+    h.__name__ = f"om_{kind}"
+    return h
+
+
+def _tio_view(c: Call):
+    try:
+        return c.ctx.collector.tomorrow.view(_offset(c))
+    except PermissionError as e:
+        raise ApiError(404, str(e))
+    except tomorrow.TomorrowError as e:
+        raise ApiError(502, f"Sumber tidak tersedia: {e}")
 
 
 def _tio_test(c: Call):
@@ -1039,7 +1106,7 @@ def _settings_get(c: Call):
 
 
 def _settings_put(c: Call):
-    allowed = {"corridor_m", "basemaps", "guest", "openmeteo", "rainviewer", "tomorrow", "windy", "wa"}
+    allowed = {"corridor_m", "basemaps", "guest", "openmeteo", "rainviewer", "tomorrow", "windy", "wa", "wag"}
     patch = {k: v for k, v in c.body.items() if k in allowed}
     if "corridor_m" in patch:
         try:
@@ -1048,18 +1115,18 @@ def _settings_put(c: Call):
             raise ApiError(422, "Koridor harus angka meter.")
     if "wa" in patch and patch["wa"].get("url"):
         need(re.match(r"^https?://", patch["wa"]["url"]), "URL WA gateway harus diawali http:// atau https://")
+    if isinstance(patch.get("wag"), dict):
+        need(re.match(r"^https?://", str(patch["wag"].get("url", ""))), "URL WA gateway harus diawali http:// atau https://")
+        need(str(patch["wag"].get("group", "")).strip(), "Nama grup WhatsApp wajib diisi.")
     if isinstance(patch.get("tomorrow"), dict):
         t = patch["tomorrow"]
         try:
-            t["interval_min"] = max(30, min(360, int(t.get("interval_min") or 60)))
+            t["interval_min"] = max(30, min(720, int(t.get("interval_min") or 120)))
             t["max_points"] = max(1, min(15, int(t.get("max_points") or 8)))
         except (TypeError, ValueError):
             raise ApiError(422, "Interval dan jumlah lokasi Tomorrow.io harus angka.")
-        per_run = t["max_points"] + (len(tomorrow.tiles_for()) if t.get("rain_tiles", True) else 0)
-        per_hour = per_run * 60.0 / t["interval_min"]
-        need(per_hour <= tomorrow.HOUR_LIMIT and per_hour * 24 <= tomorrow.DAY_LIMIT,
-             f"Pengaturan ini memakai ±{per_hour:.0f} panggilan/jam ({per_hour * 24:.0f}/hari), melebihi kuota gratis "
-             "Tomorrow.io (25/jam, 500/hari). Kurangi jumlah lokasi atau perpanjang interval.")
+        # Interval titik yang terlalu rapat dipanjangkan otomatis oleh penjadwal (effective_interval),
+        # sehingga kuota harian tidak pernah terlewati; di sini cukup dibatasi rentangnya.
     if "basemaps" in patch:
         for bm in patch["basemaps"]:
             need(re.match(r"^https?://", str(bm.get("url", ""))), "URL basemap tidak valid.")
@@ -1069,10 +1136,8 @@ def _settings_put(c: Call):
     if "corridor_m" in patch:
         c.ctx.collector.trigger()
     if any(old_tio.get(k) != new["tomorrow"].get(k) for k in ("enabled", "api_key", "max_points", "rain_tiles")):
-        # Ambil ulang hanya bila sumber berubah, supaya kuota gratis tidak terbuang.
+        # Data tersimpan tetap dipakai; penjadwal otomatis mengisi lokasi/tile yang belum ada.
         c.ctx.collector.tomorrow.paused_until = 0
-        c.ctx.collector.tomorrow.points_at = 0
-        c.ctx.collector.tomorrow.tiles_at = 0
         c.ctx.collector.trigger()
     c.audit("ubah_pengaturan", "settings", "config", {"keys": list(patch)})
     return appsettings.masked(new)
@@ -1088,7 +1153,7 @@ def _notification_test(c: Call):
     target = s(c.body.get("target"), 40, "Nomor/ID tujuan", True)
     need(cfg["wa"].get("url"), "Isi URL WA gateway terlebih dahulu.")
     try:
-        status, text = collector.send_wa(cfg["wa"], target, "Tes notifikasi Disaster Information Center DCC — "
+        status, text = collector.send_wa(cfg["wa"], target, "Tes notifikasi GRIDCAST (PLN UP2D Sumatera Barat) — "
                                          + dt.datetime.now(WIB).strftime("%d/%m/%Y %H:%M WIB"))
     except collector.FetchError as e:
         raise ApiError(502, f"WA gateway tidak dapat dihubungi: {e}")
@@ -1129,12 +1194,14 @@ def build_routes():
         R("/api/weather/quake", _quake),
         R("/api/weather/quakes", _quakes),
         R("/api/weather/forecast", _forecast, role="user"),
-        R("/api/weather/wind", _adapter(lambda col: col.wind_grid())),
-        R("/api/weather/aqi", _adapter(lambda col: col.aqi_points())),
+        R("/api/weather/wind", _om_view("wind")),
+        R("/api/weather/aqi", _om_view("aqi")),
         R("/api/weather/radar", _adapter(lambda col: col.radar_meta())),
-        R("/api/weather/tio", _adapter(lambda col: col.tomorrow.view())),
+        R("/api/weather/tio", _tio_view),
         R("/api/weather/tio/tile/{z:int}/{x:int}/{y:int}.png", _tio_tile),
         R("/api/weather/simulate", _simulate, ("POST",), role="user", body="json"),
+        R("/api/wag/messages", _wag_messages, role="user"),
+        R("/api/wag/media/{id}", _wag_media, role="user"),
         R("/api/incidents", _incidents_list),
         R("/api/incidents", _incident_create, ("POST",), role="user", body="json"),
         R("/api/incidents/{id:int}", _incident_get),
@@ -1169,6 +1236,7 @@ def build_routes():
         R("/api/admin/settings", _settings_get, role="admin"),
         R("/api/admin/settings", _settings_put, ("PUT",), role="admin", body="json"),
         R("/api/admin/tomorrow/test", _tio_test, ("POST",), role="admin"),
+        R("/api/admin/api-usage", _api_usage, role="admin"),
         R("/api/admin/notifications", _notifications, role="admin"),
         R("/api/admin/notifications/test", _notification_test, ("POST",), role="admin", body="json"),
         Mount("/static", app=StaticFiles(directory=str(STATIC_DIR)), name="static"),

@@ -166,3 +166,20 @@ def test_validate_area_rejects_bowtie_and_closes_ring():
     g = geo.validate_area({"type": "Polygon", "coordinates": [[[100, -1], [101, -1], [101, 0], [100, 0]]]})
     assert g["coordinates"][0][0] == g["coordinates"][0][-1]
     assert abs(geo.area_km2(g) - 12290) < 200
+
+
+def test_identical_republished_alert_shows_once_latest():
+    # Kasus nyata 29 Okt 2026: BMKG menerbitkan ulang isi sama dengan ID baru, tipe Alert, tanpa referensi.
+    a = warning(id="2.49.0.1.360.0.2026.10.29.09.13.003", title="Hujan Lebat disertai Petir di Sumatera Barat")
+    b = warning(id="2.49.0.1.360.0.2026.10.29.10.13.003", title="Hujan Lebat disertai Petir di Sumatera Barat")
+    out = cap.active_warnings([b, a], AT)
+    assert [w.id for w in out] == [b.id] and out[0].republished == [a.id]
+
+
+def test_different_content_alerts_all_shown():
+    a = warning(id="x1", description="Hujan lebat di Padang")
+    b = warning(id="x2", description="Hujan lebat di Padang dan Pariaman")
+    c = warning(id="x3", description="Hujan lebat di Padang", expires="2026-10-28T06:00:00Z")
+    d = warning(id="x4", description="Hujan lebat di Padang",
+                areas=[{"type": "Polygon", "coordinates": [[[100, -1], [100.5, -1], [100.5, 0], [100, -1]]]}])
+    assert sorted(w.id for w in cap.active_warnings([a, b, c, d], AT)) == ["x1", "x2", "x3", "x4"]

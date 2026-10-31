@@ -22,7 +22,7 @@ DEFAULTS: dict = {
               "show_incidents": True},
     "openmeteo": {"enabled": False, "api_key": ""},
     "rainviewer": {"enabled": False},
-    "tomorrow": {"enabled": False, "api_key": "", "interval_min": 60, "max_points": 8, "rain_tiles": True},
+    "tomorrow": {"enabled": False, "api_key": "", "interval_min": 120, "max_points": 8, "rain_tiles": True},
     "windy": {"url": "https://www.windy.com/-0.95/100.35?radar,-0.95,100.35,8"},
     "wa": {
         "enabled": False,
@@ -36,10 +36,11 @@ DEFAULTS: dict = {
         "incident_min_severity": "tinggi",
         "app_url": "http://10.17.119.x:18085",
     },
+    "wag": {"enabled": True, "url": "http://127.0.0.1:18083", "token": "", "group": "BMKGSUMBAR&Stakeholder"},
     "arcgis": {"enabled": False, "layers": []},
 }
 
-SECRET_PATHS = [("openmeteo", "api_key"), ("tomorrow", "api_key"), ("wa", "headers")]
+SECRET_PATHS = [("openmeteo", "api_key"), ("tomorrow", "api_key"), ("wa", "headers"), ("wag", "token")]
 _lock = threading.Lock()
 _cache: dict | None = None
 
@@ -92,6 +93,8 @@ def masked(cfg: dict) -> dict:
     if c["tomorrow"].get("api_key"):
         c["tomorrow"]["api_key"] = "********"
     c["wa"]["headers"] = {k: "********" for k in (c["wa"].get("headers") or {})}
+    if c["wag"].get("token"):
+        c["wag"]["token"] = "********"
     return c
 
 
@@ -100,7 +103,7 @@ def public_view(cfg: dict) -> dict:
             "openmeteo": {"enabled": cfg["openmeteo"]["enabled"]}, "rainviewer": cfg["rainviewer"],
             "tomorrow": {"enabled": bool(cfg["tomorrow"].get("enabled") and cfg["tomorrow"].get("api_key")),
                          "rain_tiles": bool(cfg["tomorrow"].get("rain_tiles", True))},
-            "windy": cfg["windy"]}
+            "windy": cfg["windy"], "wag": {"enabled": bool(cfg["wag"].get("enabled"))}}
 
 
 def reset_cache():
